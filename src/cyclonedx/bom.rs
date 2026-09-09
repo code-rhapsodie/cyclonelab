@@ -3,6 +3,7 @@ use serde_json::Map;
 use serde_json::Value;
 
 use super::component::Component;
+use super::organization::OrganizationalEntity;
 
 /// `metadata.tools`, in its object form (CycloneDX schema >= 1.5).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -39,6 +40,8 @@ pub struct Metadata {
     pub tools: Option<Tools>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub component: Option<Component>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manufacturer: Option<OrganizationalEntity>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
