@@ -15,10 +15,12 @@ mod bom;
 mod component;
 mod hash;
 mod license;
+mod organization;
 
 pub use bom::{Bom, Metadata, Tools};
 pub use component::Component;
 pub use hash::HashObject;
 pub use license::{LicenseChoice, LicenseInfo};
+pub use organization::OrganizationalEntity;
 
 pub const SPEC_VERSION: &str = "1.7";
