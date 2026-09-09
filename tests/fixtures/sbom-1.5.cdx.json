@@ -1,0 +1,32 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "serialNumber": "urn:uuid:11111111-1111-4111-8111-111111111111",
+  "metadata": {
+    "timestamp": "2024-01-01T00:00:00Z",
+    "tools": [
+      {
+        "vendor": "CycloneDX",
+        "name": "cargo-cyclonedx",
+        "version": "0.5.9"
+      }
+    ],
+    "component": {
+      "type": "application",
+      "bom-ref": "test-fixture@0.1.0",
+      "name": "test-fixture",
+      "version": "0.1.0"
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/example@1.0.0",
+      "author": "Jane Doe <jane@example.com>",
+      "name": "example",
+      "version": "1.0.0",
+      "purl": "pkg:cargo/example@1.0.0"
+    }
+  ]
+}

@@ -65,14 +65,14 @@ pub struct SbomPlaceholders<'a> {
 impl<'a> SbomPlaceholders<'a> {
     fn as_pairs(&self) -> [(&'static str, &'a str); 8] {
         [
-            ("version", self.version),
-            ("file_uuid", self.file_uuid),
-            ("source_url", self.source_url),
-            ("source_hash", self.source_hash),
-            ("distribution_url", self.distribution_url),
-            ("distribution_hash", self.distribution_hash),
-            ("date_now", self.date_now),
-            ("php_version", self.php_version),
+            ("@version", self.version),
+            ("@file_uuid", self.file_uuid),
+            ("@source_url", self.source_url),
+            ("@source_hash", self.source_hash),
+            ("@distribution_url", self.distribution_url),
+            ("@distribution_hash", self.distribution_hash),
+            ("@date_now", self.date_now),
+            ("@php_version", self.php_version),
         ]
     }
 }

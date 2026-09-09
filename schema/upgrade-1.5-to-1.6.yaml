@@ -1,0 +1,150 @@
+# Upgrade recipe: CycloneDX BOM 1.5 -> 1.6
+#
+# Declarative list of the steps needed to bring a CycloneDX 1.5 document
+# (validated against bom-1.5.schema.json) up to a 1.6 document (validated
+# against bom-1.6.schema.json), by moving every field that 1.6 deprecates
+# onto its replacement. Diffed directly from the two schemas in this folder;
+# see git history for the `python3` one-liners used to find each change.
+#
+# Format
+# ------
+# Each entry in `steps` is applied in order and has an `action`:
+#
+#   add       Set a value at `target`, which is created if missing.
+#             Exactly one value source is given:
+#               value:     a literal, written directly in this file
+#               valueFrom.file:      path (relative to this file) to a JSON
+#                          file whose content becomes the value
+#               valueFrom.generator: a computed value — `uuid` (a random
+#                          UUIDv4) or `timestamp` (current time, formatted
+#                          per `valueFrom.format`, strftime syntax)
+#
+#   move      Rename/relocate the value at `source` to `target`. No-op if
+#             `source` is absent.
+#
+#   remove    Delete the value at `target`.
+#
+#   transform Structural change that a plain move can't express (a type
+#             change, wrapping, or field remapping). `strategy` selects how:
+#               wrap-in-array
+#                 Replace the value at `source` with a single-element array
+#                 containing it, written to `target` (`target` may equal
+#                 `source` for an in-place wrap). If `item` is given, each
+#                 wrapped value is rebuilt from that template instead of
+#                 being copied as-is — e.g. a bare string becomes
+#                 `{name: "{@value}"}`. `remove_source: true` deletes the
+#                 original field once `source` and `target` differ.
+#               legacy-array-to-object
+#                 Replace a bare array at `source` with an object at
+#                 `target` (same field, in place) built from `build`: each
+#                 key is either a literal or a template string. A template
+#                 key nested under `each: value` (see the tools steps below)
+#                 is evaluated once per array item, with `{@item.<field>}`
+#                 bound to that item's fields; the result becomes an array
+#                 under that key.
+#
+# `source`/`target` are JSONPath. A path containing `*` or `..` is applied
+# at every depth/index it matches (e.g. `$..author` reaches
+# `metadata.component.author`, every `components[*].author`, and nested
+# `components[*].components[*].author` alike); source and target must then
+# resolve to the same set of parent nodes. `when` guards a step so it only
+# fires on matches of the given JSON type (`string`, `object`, `array`),
+# which matters when a field name like `author` is reused with a different
+# shape elsewhere in the schema (e.g. `commit.author`, an identifiableAction
+# object, must not be touched by the component.author migration below).
+#
+# Placeholders: `{@value}` is the matched value, `{@item.<field>}` a field
+# of the current array item — same `{@name}` substitution style as
+# src/util/template.rs.
+
+from: "1.5"
+to: "1.6"
+
+steps:
+  - id: spec-version
+    action: add
+    description: Bump specVersion to 1.6.
+    target: $.specVersion
+    value: "1.6"
+
+  - id: schema-url
+    action: add
+    description: Point $schema at the 1.6 schema, when the document sets one.
+    target: $.["$schema"]
+    when: string
+    value: "http://cyclonedx.org/schema/bom-1.6.schema.json"
+
+  - id: metadata-manufacturer
+    action: move
+    description: >
+      metadata.manufacture ("the organization that manufactured the
+      component the BOM describes") is deprecated in 1.6 in favor of
+      metadata.manufacturer ("the organization that created the BOM").
+      Same organizationalEntity shape, so this is a straight rename.
+    source: $.metadata.manufacture
+    target: $.metadata.manufacturer
+
+  - id: metadata-tools-to-components
+    action: transform
+    description: >
+      metadata.tools as a bare array of legacy `tool` objects is deprecated
+      in 1.6 in favor of metadata.tools.components (and .services). Each
+      legacy tool becomes a `component` of type "application".
+    strategy: legacy-array-to-object
+    source: $.metadata.tools
+    target: $.metadata.tools
+    when: array
+    build:
+      components:
+        each: value
+        map:
+          type: application
+          publisher: "{@item.vendor}"
+          name: "{@item.name}"
+          version: "{@item.version}"
+          hashes: "{@item.hashes}"
+          externalReferences: "{@item.externalReferences}"
+
+  - id: vulnerability-tools-to-components
+    action: transform
+    description: Same legacy tools[] -> tools.components[] migration, per vulnerability.
+    strategy: legacy-array-to-object
+    source: $.vulnerabilities[*].tools
+    target: $.vulnerabilities[*].tools
+    when: array
+    build:
+      components:
+        each: value
+        map:
+          type: application
+          publisher: "{@item.vendor}"
+          name: "{@item.name}"
+          version: "{@item.version}"
+          hashes: "{@item.hashes}"
+          externalReferences: "{@item.externalReferences}"
+
+  - id: component-author-to-authors
+    action: transform
+    description: >
+      component.author (a free-text string) is deprecated in 1.6 in favor
+      of component.authors, an array of organizationalContact objects.
+      Guarded to `string` so it never touches commit.author, which is an
+      unrelated identifiableAction object.
+    strategy: wrap-in-array
+    source: $..author
+    target: $..authors
+    when: string
+    remove_source: true
+    item:
+      name: "{@value}"
+
+  - id: component-evidence-identity-to-array
+    action: transform
+    description: >
+      componentEvidence.identity used to be a single identity object; 1.6
+      expects an array of identity objects instead. In-place wrap, field
+      shape (field/confidence/methods/...) is unchanged.
+    strategy: wrap-in-array
+    source: $..evidence.identity
+    target: $..evidence.identity
+    when: object

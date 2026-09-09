@@ -6,4 +6,5 @@
 //! `crate::cli::Cli::run`.
 
 pub mod generate_extension_sbom;
+pub mod transform;
 pub mod validate;

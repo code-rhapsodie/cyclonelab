@@ -23,6 +23,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 ureq = { version = "2", features = ["tls"] }
 anyhow = "1"
 jsonschema = { version = "0.55.1", default-features = false }
+yaml_serde = "0.10.7"
 
 [dev-dependencies]
 tempfile = "3"

@@ -16,6 +16,7 @@ mod component;
 mod hash;
 mod license;
 mod organization;
+pub mod validation;
 
 pub use bom::{Bom, Metadata, Tools};
 pub use component::Component;

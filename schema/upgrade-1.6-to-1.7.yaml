@@ -1,0 +1,189 @@
+# Upgrade recipe: CycloneDX BOM 1.6 -> 1.7
+#
+# Declarative list of the steps needed to bring a CycloneDX 1.6 document
+# (validated against bom-1.6.schema.json) up to a 1.7 document (validated
+# against bom-1.7.schema.json), by moving every field that 1.7 deprecates
+# onto its replacement. Diffed directly from the two schemas in this folder.
+#
+# Everything 1.6 already deprecated (metadata.manufacture, metadata.tools /
+# vulnerability.tools as a bare legacy `tool[]`, component.author,
+# componentEvidence.identity as a single object, component.modified) is
+# still accepted as-is in 1.7 and unchanged since 1.6 — see
+# upgrade-1.5-to-1.6.yaml for those. This file only covers what 1.7 newly
+# deprecates: cryptoProperties fields being replaced by
+# `relatedCryptographicAssets` and the new `ellipticCurve` enum.
+#
+# Format
+# ------
+# Each entry in `steps` is applied in order and has an `action`:
+#
+#   add       Set a value at `target`, which is created if missing.
+#             Exactly one value source is given:
+#               value:     a literal, written directly in this file
+#               valueFrom.file:      path (relative to this file) to a JSON
+#                          file whose content becomes the value
+#               valueFrom.generator: a computed value — `uuid` (a random
+#                          UUIDv4) or `timestamp` (current time, formatted
+#                          per `valueFrom.format`, strftime syntax)
+#
+#   move      Rename/relocate the value at `source` to `target`. No-op if
+#             `source` is absent. Note on `crypto-elliptic-curve` below: 1.7
+#             also narrows the field from a free string to an enum, so a
+#             moved value that isn't one of the recognized curve
+#             identifiers will need a human to fix it up afterwards.
+#
+#   remove    Delete the value at `target`.
+#
+#   transform Structural change that a plain move can't express (a type
+#             change, wrapping, or field remapping). `strategy` selects how:
+#               wrap-in-array
+#                 Replace the value at `source` (a string or object) with a
+#                 single-element array containing it, written to `target`.
+#                 `item` rebuilds that one element from a template instead
+#                 of copying the value as-is, with `{@value}` bound to it.
+#                 `remove_source: true` deletes the original field once
+#                 `source` and `target` differ. `append: true` pushes onto
+#                 an existing array at `target` instead of replacing it —
+#                 needed whenever more than one legacy field converges on
+#                 the same 1.7 field (see the certificate steps below).
+#               map-array
+#                 Rebuild each element of the array at `source` from
+#                 `item`, writing the result array to `target` (`target`
+#                 may equal `source`). `{@item}` is the whole element when
+#                 it's a scalar, `{@item.<field>}` one of its fields when
+#                 it's an object.
+#
+#   manual    Flags a field 1.7 deprecates that this recipe deliberately
+#             does not touch, because deriving the replacement value isn't
+#             mechanical — it needs a human (or a tool with access to the
+#             referenced components) to decide it. `description` says what
+#             to do; the field is otherwise left as-is, which stays valid
+#             in 1.7 since the legacy shape is still accepted there.
+#
+# `source`/`target` are JSONPath. A path containing `*` or `..` is applied
+# at every depth/index it matches; source and target must then resolve to
+# the same set of parent nodes. `when` guards a step so it only fires on
+# matches of the given JSON type (`string`, `object`, `array`).
+#
+# Placeholders: `{@value}` is the matched value, `{@item}`/`{@item.<field>}`
+# the current array element (or one of its fields) — same `{@name}`
+# substitution style as src/util/template.rs.
+
+from: "1.6"
+to: "1.7"
+
+steps:
+  - id: spec-version
+    action: add
+    description: Bump specVersion to 1.7.
+    target: $.specVersion
+    value: "1.7"
+
+  - id: schema-url
+    action: add
+    description: Point $schema at the 1.7 schema, when the document sets one.
+    target: $.["$schema"]
+    when: string
+    value: "http://cyclonedx.org/schema/bom-1.7.schema.json"
+
+  - id: crypto-elliptic-curve
+    action: move
+    description: >
+      cryptoProperties.algorithmProperties.curve (a free-text string) is
+      deprecated in 1.7 in favor of .ellipticCurve, which is now an
+      enumeration defined in cryptography-defs.schema.json. The value
+      carries over unchanged; re-check it against the enum afterwards.
+    source: $..cryptoProperties.algorithmProperties.curve
+    target: $..cryptoProperties.algorithmProperties.ellipticCurve
+
+  - id: crypto-certificate-file-extension
+    action: move
+    description: >
+      certificateProperties.certificateExtension is deprecated in 1.7 in
+      favor of .certificateFileExtension. Same string value, same meaning
+      (e.g. "crt", "pem"), pure rename.
+    source: $..cryptoProperties.certificateProperties.certificateExtension
+    target: $..cryptoProperties.certificateProperties.certificateFileExtension
+
+  - id: crypto-certificate-signature-algorithm-ref
+    action: transform
+    description: >
+      certificateProperties.signatureAlgorithmRef (a bare bom-ref string)
+      is deprecated in 1.7 in favor of an entry in
+      .relatedCryptographicAssets ({type, ref} objects). Appends so it
+      doesn't clobber the entry added for subjectPublicKeyRef below when
+      both are present on the same certificate.
+    strategy: wrap-in-array
+    source: $..cryptoProperties.certificateProperties.signatureAlgorithmRef
+    target: $..cryptoProperties.certificateProperties.relatedCryptographicAssets
+    when: string
+    remove_source: true
+    append: true
+    item:
+      type: algorithm
+      ref: "{@value}"
+
+  - id: crypto-certificate-subject-public-key-ref
+    action: transform
+    description: >
+      certificateProperties.subjectPublicKeyRef (a bare bom-ref string) is
+      deprecated in 1.7 in favor of an entry in .relatedCryptographicAssets
+      ({type, ref} objects). Appends alongside signatureAlgorithmRef above.
+    strategy: wrap-in-array
+    source: $..cryptoProperties.certificateProperties.subjectPublicKeyRef
+    target: $..cryptoProperties.certificateProperties.relatedCryptographicAssets
+    when: string
+    remove_source: true
+    append: true
+    item:
+      type: publicKey
+      ref: "{@value}"
+
+  - id: crypto-related-material-algorithm-ref
+    action: transform
+    description: >
+      relatedCryptoMaterialProperties.algorithmRef (a bare bom-ref string)
+      is deprecated in 1.7 in favor of an entry in
+      .relatedCryptographicAssets ({type, ref} objects).
+    strategy: wrap-in-array
+    source: $..cryptoProperties.relatedCryptoMaterialProperties.algorithmRef
+    target: $..cryptoProperties.relatedCryptoMaterialProperties.relatedCryptographicAssets
+    when: string
+    remove_source: true
+    item:
+      type: algorithm
+      ref: "{@value}"
+
+  - id: crypto-protocol-crypto-ref-array
+    action: transform
+    description: >
+      protocolProperties.cryptoRefArray (a bare array of bom-ref strings)
+      is deprecated in 1.7 in favor of .relatedCryptographicAssets, an
+      array of {type, ref} objects.
+    strategy: map-array
+    source: $..cryptoProperties.protocolProperties.cryptoRefArray
+    target: $..cryptoProperties.protocolProperties.relatedCryptographicAssets
+    when: array
+    remove_source: true
+    item:
+      type: algorithm
+      ref: "{@item}"
+
+  - id: crypto-protocol-ikev2-transform-refs
+    action: manual
+    description: >
+      protocolProperties.ikev2TransformTypes.{encr,prf,integ,ke,auth} used
+      to hold a bare cryptoRefArray (bom-refs to other cryptographic-asset
+      components). 1.7 prefers a direct array of algorithm identifiers
+      (definitions ikeV2Enc/ikeV2Prf/ikeV2Integ/ikeV2Ke/ikeV2Auth) instead.
+      Converting means resolving each ref to the algorithm component it
+      points at and picking the matching identifier from that enum — not a
+      mechanical field move, so this step is left for manual handling (or a
+      tool that can walk bom-ref links). The legacy form stays valid in
+      1.7, so leaving it untouched does not break validation.
+    paths:
+      - $..cryptoProperties.protocolProperties.ikev2TransformTypes.encr
+      - $..cryptoProperties.protocolProperties.ikev2TransformTypes.prf
+      - $..cryptoProperties.protocolProperties.ikev2TransformTypes.integ
+      - $..cryptoProperties.protocolProperties.ikev2TransformTypes.ke
+      - $..cryptoProperties.protocolProperties.ikev2TransformTypes.auth
