@@ -89,6 +89,54 @@ fn upgrades_the_real_fixture_from_1_5_to_1_7_through_both_recipes() {
 }
 
 #[test]
+fn an_upgrade_step_lets_a_later_step_target_a_field_that_only_exists_from_the_target_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let sbom = dir.path().join("sbom-1.5.json");
+    fs::copy(repo_path("tests/fixtures/sbom-1.5.cdx.json"), &sbom).unwrap();
+
+    let transform_file = dir.path().join("upgrade-then-add.yaml");
+    fs::write(
+        &transform_file,
+        "steps:\n\
+         \x20 - id: upgrade to 1.6\n\
+         \x20   action: upgrade\n\
+         \x20   version_target: \"1.6\"\n\
+         \n\
+         \x20 - id: add generator\n\
+         \x20   action: merge\n\
+         \x20   description: Add tools.\n\
+         \x20   target: $.metadata.tools.components[]\n\
+         \x20   value: '[{\"type\": \"application\", \"publisher\": \"test\", \"name\": \"cyclonedx\", \"version\": \"0.0.1\"}]'\n",
+    )
+    .unwrap();
+
+    let output_file = dir.path().join("out.json");
+    let output = run(
+        dir.path(),
+        &[
+            sbom.to_str().unwrap(),
+            transform_file.to_str().unwrap(),
+            output_file.to_str().unwrap(),
+        ],
+    );
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let content = fs::read_to_string(&output_file).expect("the transformed SBOM must be written");
+    let bom: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+    assert_eq!(bom["specVersion"], "1.6");
+    let components = bom["metadata"]["tools"]["components"].as_array().unwrap();
+    assert!(components.iter().any(|c| c["name"] == "cargo-cyclonedx"));
+    assert!(components.iter().any(|c| c["name"] == "cyclonedx"));
+}
+
+#[test]
 fn fails_when_the_transform_file_is_missing() {
     let dir = tempfile::tempdir().unwrap();
     let sbom = dir.path().join("sbom.json");
