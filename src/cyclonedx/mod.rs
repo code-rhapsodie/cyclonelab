@@ -18,10 +18,6 @@ mod license;
 mod organization;
 pub mod validation;
 
-pub use bom::{Bom, Metadata, Tools};
+pub use bom::{Bom, Tools};
 pub use component::Component;
-pub use hash::HashObject;
-pub use license::{LicenseChoice, LicenseInfo};
-pub use organization::OrganizationalEntity;
-
-pub const SPEC_VERSION: &str = "1.7";
+pub use license::LicenseChoice;

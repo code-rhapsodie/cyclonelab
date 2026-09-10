@@ -11,12 +11,3 @@ pub struct HashObject {
     pub alg: String,
     pub content: String,
 }
-
-impl HashObject {
-    pub fn sha256(content: impl Into<String>) -> Self {
-        Self {
-            alg: "SHA-256".to_string(),
-            content: content.into(),
-        }
-    }
-}

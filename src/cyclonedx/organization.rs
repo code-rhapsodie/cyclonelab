@@ -22,15 +22,6 @@ pub struct OrganizationalEntity {
     pub extra: Map<String, Value>,
 }
 
-impl OrganizationalEntity {
-    pub fn new(name: impl Into<String>) -> Self {
-        Self {
-            name: Some(name.into()),
-            ..Default::default()
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -52,13 +43,5 @@ mod tests {
 
         let reserialized = serde_json::to_value(&manufacturer).unwrap();
         assert_eq!(reserialized, json);
-    }
-
-    #[test]
-    fn new_sets_only_the_name() {
-        let manufacturer = OrganizationalEntity::new("Example Inc.");
-        assert_eq!(manufacturer.name.as_deref(), Some("Example Inc."));
-        assert!(manufacturer.url.is_empty());
-        assert!(manufacturer.bom_ref.is_none());
     }
 }

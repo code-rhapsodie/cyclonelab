@@ -7,6 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use sha2::{Digest, Sha256};
+
 fn cyclonelab() -> Command {
     Command::new(env!("CARGO_BIN_EXE_cyclonelab"))
 }
@@ -120,7 +122,11 @@ fn generates_a_sbom_next_to_each_matching_artifact() {
         env!("CARGO_PKG_VERSION")
     );
 
-    let expected_distribution_hash = cyclonelab::util::hashing::sha256_file(&zip_path).unwrap();
+    let zip_content = fs::read(&zip_path).unwrap();
+    let expected_distribution_hash: String = Sha256::digest(&zip_content)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     let external_references = bom["metadata"]["component"]["externalReferences"]
         .as_array()
         .unwrap();
