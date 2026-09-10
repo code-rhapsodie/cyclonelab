@@ -1,7 +1,7 @@
 //! `merge` action: merges a JSON fragment into the document at a location,
 //! creating it if absent (see `doc/transform/action-merge.md`).
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -20,12 +20,23 @@ impl Action for MergeStep {
         let fragment: Value = serde_json::from_str(&self.value)
             .with_context(|| format!("step '{}': 'value' is not valid JSON", ctx.step_id))?;
 
-        let path = jsonpath::literal(&self.target)
+        // A trailing `[]` selects the "append to array" form instead of the
+        // default "replace/deep-merge" form (see doc/transform/action-merge.md).
+        let (target, append) = match self.target.strip_suffix("[]") {
+            Some(prefix) => (prefix, true),
+            None => (self.target.as_str(), false),
+        };
+
+        let path = jsonpath::literal(target)
             .with_context(|| format!("step '{}': invalid target '{}'", ctx.step_id, self.target))?;
 
-        let merged = match jsonpath::get(doc, &path) {
-            Some(existing) => deep_merge(existing, fragment),
-            None => fragment,
+        let merged = if append {
+            append_to_array(doc, &path, fragment, ctx, &self.target)?
+        } else {
+            match jsonpath::get(doc, &path) {
+                Some(existing) => deep_merge(existing, fragment),
+                None => fragment,
+            }
         };
 
         jsonpath::set(doc, &path, merged).with_context(|| {
@@ -34,6 +45,40 @@ impl Action for MergeStep {
                 ctx.step_id, self.target
             )
         })
+    }
+}
+
+/// Resolves the merged value for the `target[]` append form: `fragment` must
+/// itself be a JSON array, whose elements are appended to the array already
+/// at `path` (or which simply becomes the new array, if `path` is absent).
+/// An existing non-array value at `path` is an explicit step error.
+fn append_to_array(
+    doc: &Value,
+    path: &[jsonpath::PathElem],
+    fragment: Value,
+    ctx: &StepContext,
+    display_target: &str,
+) -> Result<Value> {
+    let Value::Array(fragment_items) = fragment else {
+        bail!(
+            "step '{}': 'value' must be a JSON array because target '{}' ends with '[]'",
+            ctx.step_id,
+            display_target
+        );
+    };
+
+    match jsonpath::get(doc, path) {
+        Some(Value::Array(existing)) => {
+            let mut merged = existing.clone();
+            merged.extend(fragment_items);
+            Ok(Value::Array(merged))
+        }
+        Some(_) => bail!(
+            "step '{}': target '{}' ends with '[]' but the existing value is not an array",
+            ctx.step_id,
+            display_target
+        ),
+        None => Ok(Value::Array(fragment_items)),
     }
 }
 
@@ -122,5 +167,62 @@ mod tests {
         let mut doc = json!({});
         let err = step.apply(&mut doc, &ctx()).unwrap_err();
         assert!(err.to_string().contains("test-step"));
+    }
+
+    #[test]
+    fn append_target_appends_to_an_existing_array_without_losing_prior_items() {
+        let step: MergeStep = serde_json::from_value(json!({
+            "target": "$.metadata.tools.components[]",
+            "value": "[{\"name\": \"cyclonelab\"}]",
+        }))
+        .unwrap();
+        let mut doc = json!({"metadata": {"tools": {"components": [{"name": "existing"}]}}});
+        step.apply(&mut doc, &ctx()).unwrap();
+        assert_eq!(
+            doc,
+            json!({"metadata": {"tools": {"components": [
+                {"name": "existing"},
+                {"name": "cyclonelab"}
+            ]}}})
+        );
+    }
+
+    #[test]
+    fn append_target_creates_the_array_when_absent() {
+        let step: MergeStep = serde_json::from_value(json!({
+            "target": "$.metadata.tools.components[]",
+            "value": "[{\"name\": \"cyclonelab\"}]",
+        }))
+        .unwrap();
+        let mut doc = json!({"metadata": {"tools": {}}});
+        step.apply(&mut doc, &ctx()).unwrap();
+        assert_eq!(
+            doc,
+            json!({"metadata": {"tools": {"components": [{"name": "cyclonelab"}]}}})
+        );
+    }
+
+    #[test]
+    fn append_target_rejects_a_non_array_value() {
+        let step: MergeStep = serde_json::from_value(json!({
+            "target": "$.metadata.tools.components[]",
+            "value": "{\"name\": \"cyclonelab\"}",
+        }))
+        .unwrap();
+        let mut doc = json!({"metadata": {"tools": {"components": []}}});
+        let err = step.apply(&mut doc, &ctx()).unwrap_err();
+        assert!(err.to_string().contains("must be a JSON array"));
+    }
+
+    #[test]
+    fn append_target_rejects_an_existing_non_array_value() {
+        let step: MergeStep = serde_json::from_value(json!({
+            "target": "$.metadata.tools.components[]",
+            "value": "[{\"name\": \"cyclonelab\"}]",
+        }))
+        .unwrap();
+        let mut doc = json!({"metadata": {"tools": {"components": {"not": "an array"}}}});
+        let err = step.apply(&mut doc, &ctx()).unwrap_err();
+        assert!(err.to_string().contains("is not an array"));
     }
 }
