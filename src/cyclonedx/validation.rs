@@ -2,6 +2,8 @@
 //! `transform` commands: extracts `specVersion` from a document, picks the
 //! matching bundled schema, and validates against it.
 
+use std::collections::HashMap;
+
 use anyhow::{Context, Result};
 use jsonschema::{Retrieve, Uri};
 use serde_json::Value;
@@ -95,7 +97,7 @@ pub fn validate_bom(instance: &Value) -> Result<ValidationOutcome> {
         .build(&schema)
         .context("Embedded CycloneDX schema failed to compile (this is a bug in cyclonelab)")?;
 
-    let errors = validator
+    let mut errors: Vec<SchemaError> = validator
         .iter_errors(instance)
         .map(|error| SchemaError {
             instance_path: error.instance_path().to_string(),
@@ -103,8 +105,146 @@ pub fn validate_bom(instance: &Value) -> Result<ValidationOutcome> {
         })
         .collect();
 
+    errors.extend(find_duplicate_bom_refs(instance));
+
     Ok(ValidationOutcome {
         spec_version: spec_version.to_string(),
         errors,
     })
+}
+
+/// Every `bom-ref` in the document must be unique (components, services,
+/// vulnerabilities, annotations, and any other object carrying one), a
+/// constraint the JSON Schema itself cannot express. Walks the whole
+/// document looking for a `"bom-ref"` string field on any object, wherever
+/// it is nested, and reports every value used more than once.
+fn find_duplicate_bom_refs(instance: &Value) -> Vec<SchemaError> {
+    let mut occurrences: Vec<(String, String)> = Vec::new();
+    collect_bom_refs(instance, "", &mut occurrences);
+
+    let mut paths_by_ref: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (bom_ref, path) in &occurrences {
+        paths_by_ref
+            .entry(bom_ref.as_str())
+            .or_default()
+            .push(path.as_str());
+    }
+
+    let mut errors: Vec<SchemaError> = paths_by_ref
+        .into_iter()
+        .filter(|(_, paths)| paths.len() > 1)
+        .flat_map(|(bom_ref, mut paths)| {
+            paths.sort_unstable();
+            let first = paths[0].to_string();
+            paths.into_iter().skip(1).map(move |path| SchemaError {
+                instance_path: path.to_string(),
+                message: format!("duplicate bom-ref '{bom_ref}', also defined at '{first}'"),
+            })
+        })
+        .collect();
+
+    errors.sort_by(|a, b| a.instance_path.cmp(&b.instance_path));
+    errors
+}
+
+/// Recursively walks `value`, recording the JSON pointer path of every
+/// object that has a `"bom-ref"` string field.
+fn collect_bom_refs(value: &Value, path: &str, out: &mut Vec<(String, String)>) {
+    match value {
+        Value::Object(map) => {
+            if let Some(bom_ref) = map.get("bom-ref").and_then(Value::as_str) {
+                out.push((bom_ref.to_string(), path.to_string()));
+            }
+            for (key, child) in map {
+                collect_bom_refs(
+                    child,
+                    &format!("{path}/{}", escape_pointer_segment(key)),
+                    out,
+                );
+            }
+        }
+        Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                collect_bom_refs(item, &format!("{path}/{index}"), out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Escapes a JSON object key for use as a segment of a JSON pointer (RFC
+/// 6901): `~` becomes `~0` and `/` becomes `~1`.
+fn escape_pointer_segment(key: &str) -> String {
+    key.replace('~', "~0").replace('/', "~1")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_duplicates_reports_no_errors() {
+        let instance = serde_json::json!({
+            "components": [
+                {"bom-ref": "a", "type": "library", "name": "a"},
+                {"bom-ref": "b", "type": "library", "name": "b"},
+            ],
+        });
+
+        assert!(find_duplicate_bom_refs(&instance).is_empty());
+    }
+
+    #[test]
+    fn detects_duplicate_components() {
+        let instance = serde_json::json!({
+            "components": [
+                {"bom-ref": "dup", "type": "library", "name": "a"},
+                {"bom-ref": "dup", "type": "library", "name": "b"},
+            ],
+        });
+
+        let errors = find_duplicate_bom_refs(&instance);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].instance_path, "/components/1");
+        assert!(errors[0].message.contains("dup"));
+        assert!(errors[0].message.contains("/components/0"));
+    }
+
+    #[test]
+    fn detects_duplicates_across_nested_components_and_other_object_kinds() {
+        let instance = serde_json::json!({
+            "components": [
+                {
+                    "bom-ref": "shared",
+                    "type": "library",
+                    "name": "outer",
+                    "components": [
+                        {"bom-ref": "nested-ok", "type": "library", "name": "inner"},
+                    ],
+                },
+            ],
+            "services": [
+                {"bom-ref": "shared", "name": "svc"},
+            ],
+            "vulnerabilities": [
+                {"bom-ref": "vuln", "id": "CVE-0000-0000"},
+            ],
+        });
+
+        let errors = find_duplicate_bom_refs(&instance);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].message.contains("shared"));
+    }
+
+    #[test]
+    fn ignores_objects_without_a_bom_ref() {
+        let instance = serde_json::json!({
+            "components": [
+                {"type": "library", "name": "a"},
+                {"type": "library", "name": "b"},
+            ],
+        });
+
+        assert!(find_duplicate_bom_refs(&instance).is_empty());
+    }
 }
