@@ -10,6 +10,7 @@ pub mod merge;
 mod r#move;
 pub mod remove;
 pub mod structural;
+pub mod upgrade;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -67,6 +68,7 @@ pub enum StepAction {
     Merge(merge::MergeStep),
     Transform(structural::TransformStep),
     Manual(manual::ManualStep),
+    Upgrade(upgrade::UpgradeStep),
 }
 
 impl Action for Step {
@@ -78,6 +80,7 @@ impl Action for Step {
             StepAction::Merge(step) => step.apply(doc, ctx),
             StepAction::Transform(step) => step.apply(doc, ctx),
             StepAction::Manual(step) => step.apply(doc, ctx),
+            StepAction::Upgrade(step) => step.apply(doc, ctx),
         }
     }
 }
@@ -100,6 +103,8 @@ pub fn substitute_vars(step: &Step, vars: &[(String, String)]) -> Result<Step> {
 /// `manual` step carries a non-empty `description` (its only purpose being
 /// to display it).
 pub fn validate_steps(steps: &[Step]) -> Result<()> {
+    let known_upgrade_targets = upgrade::known_version_targets()?;
+
     let mut seen: HashMap<&str, usize> = HashMap::new();
     for (index, step) in steps.iter().enumerate() {
         if let Some(&first) = seen.get(step.id.as_str()) {
@@ -123,6 +128,19 @@ pub fn validate_steps(steps: &[Step]) -> Result<()> {
             bail!(
                 "step '{}': 'manual' action requires a non-empty 'description'",
                 step.id
+            );
+        }
+
+        if let StepAction::Upgrade(upgrade_step) = &step.action
+            && !known_upgrade_targets
+                .iter()
+                .any(|target| target == &upgrade_step.version_target)
+        {
+            bail!(
+                "step '{}': 'version_target' \"{}\" is not reachable by any embedded upgrade recipe (known targets: {})",
+                step.id,
+                upgrade_step.version_target,
+                known_upgrade_targets.join(", ")
             );
         }
     }
@@ -213,6 +231,32 @@ mod tests {
             "action": "manual",
             "description": "needs a human",
             "target": "$.a",
+        }))
+        .unwrap();
+        validate_steps(&[step]).unwrap();
+    }
+
+    #[test]
+    fn validate_steps_rejects_an_upgrade_step_targeting_a_version_no_recipe_leads_to() {
+        let step: Step = serde_json::from_value(json!({
+            "id": "upgrade",
+            "action": "upgrade",
+            "version_target": "1.5",
+        }))
+        .unwrap();
+        let err = validate_steps(&[step]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("not reachable by any embedded upgrade recipe")
+        );
+    }
+
+    #[test]
+    fn validate_steps_accepts_an_upgrade_step_targeting_a_known_version() {
+        let step: Step = serde_json::from_value(json!({
+            "id": "upgrade",
+            "action": "upgrade",
+            "version_target": "1.7",
         }))
         .unwrap();
         validate_steps(&[step]).unwrap();
