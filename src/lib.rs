@@ -11,4 +11,5 @@ pub mod cli;
 pub mod commands;
 pub mod cyclonedx;
 pub mod generator_tool;
+pub mod transform_actions;
 pub mod util;

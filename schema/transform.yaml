@@ -1,0 +1,40 @@
+# Variables declared here can be used in this file with a `{$<name>}`
+# placeholder. `cyclonelab transform` also accepts `--variable name=value`,
+# which takes priority over the resolution below.
+variables:
+  repo:
+    env: GITHUB_REPOSITORY
+    required: true # if the env var is unset, the user is prompted for a value
+  version:
+    value: 1.2.0
+    required: true
+
+
+steps:
+  - id: update file uuid
+    action: add
+    description: Generate a new uuid for file
+    target: $.serialNumber
+    valueFrom:
+      generator: uuid
+    value: "urn:uuid:{@value}"
+
+  - id: update timestamp
+    action: add
+    description: Update timestamp
+    target: $.metadata.timestamp
+    valueFrom:
+      generator: timestamp
+      format: "%Y-%m-%dT%H:%M:%SZ"
+
+  - id: add component
+    action: merge # merge the json provided into value key with the target. Is the target does not exist, create it. Before merge, replace all placeholder and validate the json.
+    target: $.metadata.component
+    value: '{
+			"type": "library",
+			"bom-ref": "pkg:generic/code-rhapsodie/cyclonelab@{$version}",
+			"purl": "pkg:generic/code-rhapsodie/cyclonelab@{$version}",
+			"cpe": "cpe:2.3:a:code-rhapsodie:cyclonelab:{$version}:*:*:*:*:*:*:*",
+			"group": "code-rhapsodie",
+			"name": "cyclonelab",
+			"version": "{$version}"}'
