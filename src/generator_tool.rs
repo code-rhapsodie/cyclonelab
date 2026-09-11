@@ -3,15 +3,16 @@
 //! produces or modifies an SBOM.
 
 use crate::cyclonedx::{Bom, Component, LicenseChoice, Tools};
+use crate::version;
 
 pub fn component() -> Component {
     Component::new("application", "cyclonelab")
         .with_group("coderhapsodie")
         .with_publisher("Code Rhapsodie")
-        .with_version(env!("CARGO_PKG_VERSION"))
+        .with_version(version::VERSION)
         .with_purl(format!(
             "pkg:generic/coderhapsodie/cyclonelab@{}",
-            env!("CARGO_PKG_VERSION")
+            version::VERSION
         ))
         .with_license(LicenseChoice::named(
             "European Union Public License 1.2",

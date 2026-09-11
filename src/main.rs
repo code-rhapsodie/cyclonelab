@@ -13,6 +13,7 @@ mod cyclonedx;
 mod generator_tool;
 mod transform_actions;
 mod util;
+mod version;
 
 use clap::Parser;
 use cli::Cli;

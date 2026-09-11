@@ -2,12 +2,13 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use crate::commands::{generate_extension_sbom, suggest, transform, validate};
+use crate::version;
 
 #[derive(Debug, Parser)]
 #[command(
     name = "cyclonelab",
     about = "Generator and manipulation tool for CycloneDX 1.7 SBOMs",
-    version
+    version = version::FULL
 )]
 pub struct Cli {
     #[command(subcommand)]
