@@ -295,14 +295,14 @@ mod tests {
         assert_eq!(components[0].name.as_deref(), Some("cyclonelab"));
         assert_eq!(
             components[0].version.as_deref(),
-            Some(env!("CARGO_PKG_VERSION"))
+            Some(env!("CYCLONELAB_VERSION"))
         );
         assert_eq!(
             components[0].purl.as_deref(),
             Some(
                 format!(
                     "pkg:generic/coderhapsodie/cyclonelab@{}",
-                    env!("CARGO_PKG_VERSION")
+                    env!("CYCLONELAB_VERSION")
                 )
                 .as_str()
             )

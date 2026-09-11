@@ -119,7 +119,7 @@ fn generates_a_sbom_next_to_each_matching_artifact() {
     );
     assert_eq!(
         bom["metadata"]["tools"]["components"][0]["version"],
-        env!("CARGO_PKG_VERSION")
+        env!("CYCLONELAB_VERSION")
     );
 
     let zip_content = fs::read(&zip_path).unwrap();
