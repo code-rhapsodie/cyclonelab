@@ -9,6 +9,11 @@ license = "EUPL-1.2 OR AGPL-3.0"
 name = "cyclonelab"
 path = "src/main.rs"
 
+[features]
+# Experimental JSON output for `suggest` (see `CYCLONELAB_SUGGEST_JSON` in
+# src/commands/suggest.rs). Off by default: not part of the stable CLI yet.
+json-output = []
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }

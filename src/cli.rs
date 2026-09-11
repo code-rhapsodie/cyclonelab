@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use crate::commands::{generate_extension_sbom, transform, validate};
+use crate::commands::{generate_extension_sbom, suggest, transform, validate};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -22,6 +22,8 @@ enum Commands {
     Validate(validate::ValidateArgs),
     /// Applies a declarative transformation recipe to a CycloneDX SBOM.
     Transform(transform::TransformArgs),
+    /// Suggests useful component fields missing from a CycloneDX SBOM.
+    Suggest(suggest::SuggestArgs),
 }
 
 impl Cli {
@@ -30,6 +32,7 @@ impl Cli {
             Commands::GenerateExtensionSbom(args) => generate_extension_sbom::run(args),
             Commands::Validate(args) => validate::run(args),
             Commands::Transform(args) => transform::run(args),
+            Commands::Suggest(args) => suggest::run(args),
         }
     }
 }
