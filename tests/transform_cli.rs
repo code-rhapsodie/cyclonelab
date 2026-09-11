@@ -137,6 +137,53 @@ fn an_upgrade_step_lets_a_later_step_target_a_field_that_only_exists_from_the_ta
 }
 
 #[test]
+fn registers_cyclonelab_as_a_tool_alongside_the_sbom_s_existing_tools() {
+    let dir = tempfile::tempdir().unwrap();
+    let sbom = dir.path().join("sbom-1.5.json");
+    fs::copy(repo_path("tests/fixtures/sbom-1.5.cdx.json"), &sbom).unwrap();
+
+    let transform_file = dir.path().join("noop.yaml");
+    fs::write(
+        &transform_file,
+        "steps:\n  - id: noop\n    action: add\n    target: $.metadata.timestamp\n    value: \"2020-01-01T00:00:00Z\"\n",
+    )
+    .unwrap();
+
+    let output_file = dir.path().join("out.json");
+    let output = run(
+        dir.path(),
+        &[
+            sbom.to_str().unwrap(),
+            transform_file.to_str().unwrap(),
+            output_file.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let content = fs::read_to_string(&output_file).expect("the transformed SBOM must be written");
+    let bom: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+    // The fixture keeps `metadata.tools` in its legacy (pre-1.5) array form,
+    // still valid at specVersion 1.5: cyclonelab registers itself there in
+    // the matching reduced shape rather than migrating the whole field.
+    let tools = bom["metadata"]["tools"].as_array().unwrap();
+    assert!(
+        tools.iter().any(|c| c["name"] == "cargo-cyclonedx"),
+        "the SBOM's original tool must survive: {tools:?}"
+    );
+    let cyclonelab = tools
+        .iter()
+        .find(|c| c["name"] == "cyclonelab")
+        .expect("cyclonelab must register itself as a tool");
+    assert_eq!(cyclonelab["vendor"], "Code Rhapsodie");
+}
+
+#[test]
 fn fails_when_the_transform_file_is_missing() {
     let dir = tempfile::tempdir().unwrap();
     let sbom = dir.path().join("sbom.json");

@@ -12,6 +12,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::cyclonedx::validation::validate_bom;
+use crate::generator_tool;
 use crate::transform_actions::{self, Action, Step, StepContext};
 
 #[derive(Debug, Args)]
@@ -126,6 +127,24 @@ pub fn run(args: &TransformArgs) -> Result<()> {
             }
             bail!("step '{}' failed schema validation", substituted.id);
         }
+    }
+
+    generator_tool::register_as_tool(&mut document)
+        .context("unable to register cyclonelab in 'metadata.tools'")?;
+
+    let outcome = validate_bom(&document)
+        .context("unable to validate the document after registering cyclonelab as a tool")?;
+    if !outcome.errors.is_empty() {
+        println!(
+            "registering cyclonelab as a tool produced a document that does not conform to the CycloneDX {} schema ({} error{}):",
+            outcome.spec_version,
+            outcome.errors.len(),
+            if outcome.errors.len() > 1 { "s" } else { "" }
+        );
+        for error in &outcome.errors {
+            println!("  - {}: {}", error.instance_path, error.message);
+        }
+        bail!("registering cyclonelab as a tool failed schema validation");
     }
 
     let output = serde_json::to_string_pretty(&document)?;
