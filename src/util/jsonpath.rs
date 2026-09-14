@@ -7,10 +7,14 @@
 //!   identifiers (e.g. `$.["$schema"]`).
 //! - `[*]` every element of an array at this position.
 //! - `..field` recursive descent: `field` captured at any depth.
+//! - `[?field==literal]` : among the elements of an array at this position,
+//!   only those whose `field` is a string equal to `literal` (single
+//!   condition, string equality only — see `resolve_add_target` for why
+//!   `add`'s target needs this).
 //!
-//! No numeric indices, slices, or `[?(...)]` filters: none of the recipes
-//! in `schema/` need them, and adding full JSONPath support is deliberately
-//! left for a day a real need shows up.
+//! No numeric indices or slices: none of the recipes in `schema/` need
+//! them, and adding full JSONPath support is deliberately left for a day a
+//! real need shows up.
 //!
 //! A pattern is first parsed into [`Segment`]s, then resolved against a
 //! document to a list of concrete, already-existing locations
@@ -44,6 +48,12 @@ enum Segment {
     Key(String),
     Wildcard,
     Recursive(String),
+    /// `[?field==literal]`: string-equality filter over the elements of an
+    /// array at this position.
+    Filter {
+        field: String,
+        literal: String,
+    },
 }
 
 /// The JSON "type" a `when` guard can filter on (see action docs).
@@ -120,7 +130,32 @@ fn parse(path: &str) -> Result<Vec<Segment>> {
                         expect_char(&mut chars, ']', path)?;
                         segments.push(Segment::Key(key));
                     }
-                    _ => bail!("JSONPath '{path}': expected '*' or a quoted key after '['"),
+                    Some('?') => {
+                        chars.next();
+                        let field = take_ident(&mut chars);
+                        if field.is_empty() {
+                            bail!("JSONPath '{path}': expected a field name after '[?'");
+                        }
+                        expect_str(&mut chars, "==", path)?;
+                        let mut literal = String::new();
+                        loop {
+                            match chars.peek() {
+                                Some(']') | None => break,
+                                Some(&c) => {
+                                    literal.push(c);
+                                    chars.next();
+                                }
+                            }
+                        }
+                        if literal.is_empty() {
+                            bail!("JSONPath '{path}': expected a literal after '=='");
+                        }
+                        expect_char(&mut chars, ']', path)?;
+                        segments.push(Segment::Filter { field, literal });
+                    }
+                    _ => bail!(
+                        "JSONPath '{path}': expected '*', '?field==literal', or a quoted key after '['"
+                    ),
                 }
             }
             other => bail!("JSONPath '{path}': unexpected character '{other}'"),
@@ -147,6 +182,16 @@ fn expect_char(chars: &mut Peekable<Chars>, expected: char, path: &str) -> Resul
         Some(c) if c == expected => Ok(()),
         _ => bail!("JSONPath '{path}': expected '{expected}'"),
     }
+}
+
+fn expect_str(chars: &mut Peekable<Chars>, expected: &str, path: &str) -> Result<()> {
+    for expected_char in expected.chars() {
+        match chars.next() {
+            Some(c) if c == expected_char => {}
+            _ => bail!("JSONPath '{path}': expected '{expected}'"),
+        }
+    }
+    Ok(())
 }
 
 /// Resolves `path` against `doc`, returning the concrete location of every
@@ -181,6 +226,22 @@ fn resolve_rec(
                     let mut p = prefix.clone();
                     p.push(PathElem::Index(i));
                     resolve_rec(item, p, rest, out);
+                }
+            }
+        }
+        Some((Segment::Filter { field, literal }, rest)) => {
+            if let Some(arr) = value.as_array() {
+                for (i, item) in arr.iter().enumerate() {
+                    let field_matches = item
+                        .as_object()
+                        .and_then(|m| m.get(field))
+                        .and_then(Value::as_str)
+                        == Some(literal.as_str());
+                    if field_matches {
+                        let mut p = prefix.clone();
+                        p.push(PathElem::Index(i));
+                        resolve_rec(item, p, rest, out);
+                    }
                 }
             }
         }
@@ -345,8 +406,66 @@ pub fn literal(path: &str) -> Result<ConcretePath> {
             Segment::Recursive(_) => {
                 bail!("JSONPath '{path}': recursive descent ('..') is not allowed here")
             }
+            Segment::Filter { .. } => {
+                bail!("JSONPath '{path}': a filter ('[?field==literal]') is not allowed here")
+            }
         })
         .collect()
+}
+
+/// Resolves `add`'s target when it contains a data-dependent segment
+/// (`[*]`, `..field`, or `[?field==literal]`) — `None` if it doesn't, in
+/// which case the caller falls back to [`literal`]/[`set`], which alone can
+/// create the whole path from scratch.
+///
+/// `add` never creates array elements (see `doc/transform/action-add.md`),
+/// so everything up to and including the *last* such segment must already
+/// exist in `doc` — it is resolved with the same [`resolve_rec`] used by
+/// [`resolve`]. Everything after it is necessarily a plain key path (were
+/// it not, a later data-dependent segment would have been the last one
+/// instead), which is returned as-is, ready for [`set`] to create if
+/// missing — this is what lets `add`'s hash generator both select an
+/// existing CycloneDX `externalReference` by `type` and create its
+/// `hashes` field if absent (see `doc/transform/action-add.md#generator-hash`).
+///
+/// One concrete path is returned per match of the data-dependent segment;
+/// an empty `Vec` means it matched nothing (e.g. no element has the
+/// requested `type`) — a no-op for `add`, not an error, consistent with the
+/// rest of this module.
+pub fn resolve_add_target(doc: &Value, path: &str) -> Result<Option<Vec<ConcretePath>>> {
+    let segments = parse(path)?;
+    let Some(split) = segments.iter().rposition(|s| {
+        matches!(
+            s,
+            Segment::Wildcard | Segment::Recursive(_) | Segment::Filter { .. }
+        )
+    }) else {
+        return Ok(None);
+    };
+
+    let (prefix, suffix) = segments.split_at(split + 1);
+    let suffix_elems: Vec<PathElem> = suffix
+        .iter()
+        .map(|s| match s {
+            Segment::Key(name) => PathElem::Key(name.clone()),
+            // Unreachable: `split` is the position of the *last*
+            // data-dependent segment, so nothing after it can be one.
+            _ => unreachable!("segment after the last data-dependent one is always a plain key"),
+        })
+        .collect();
+
+    let mut anchors = Vec::new();
+    resolve_rec(doc, ConcretePath::new(), prefix, &mut anchors);
+
+    Ok(Some(
+        anchors
+            .into_iter()
+            .map(|mut anchor| {
+                anchor.extend(suffix_elems.clone());
+                anchor
+            })
+            .collect(),
+    ))
 }
 
 /// Checks that `source` and `target` agree on every segment except a
@@ -471,6 +590,45 @@ mod tests {
     }
 
     #[test]
+    fn filter_selects_the_matching_array_elements() {
+        let doc = json!({"a": [{"type": "foo", "b": 1}, {"type": "bar", "b": 2}]});
+        let result = resolve(&doc, "$.a[?type==foo].b").unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(get(&doc, &result[0]), Some(&json!(1)));
+    }
+
+    #[test]
+    fn filter_matches_every_element_with_an_equal_field() {
+        let doc = json!({"a": [{"type": "foo", "b": 1}, {"type": "foo", "b": 2}]});
+        let result = resolve(&doc, "$.a[?type==foo].b").unwrap();
+        let values: Vec<_> = result
+            .iter()
+            .map(|p| get(&doc, p).unwrap().clone())
+            .collect();
+        assert_eq!(values, vec![json!(1), json!(2)]);
+    }
+
+    #[test]
+    fn filter_returns_no_match_when_no_element_has_the_field_value() {
+        let doc = json!({"a": [{"type": "bar", "b": 1}]});
+        assert!(resolve(&doc, "$.a[?type==foo].b").unwrap().is_empty());
+    }
+
+    #[test]
+    fn filter_returns_no_match_when_the_filtered_position_is_not_an_array() {
+        let doc = json!({"a": {"type": "foo", "b": 1}});
+        assert!(resolve(&doc, "$.a[?type==foo].b").unwrap().is_empty());
+    }
+
+    #[test]
+    fn filter_literal_supports_non_identifier_characters() {
+        let doc = json!({"a": [{"type": "source-distribution", "b": 1}]});
+        let result = resolve(&doc, "$.a[?type==source-distribution].b").unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(get(&doc, &result[0]), Some(&json!(1)));
+    }
+
+    #[test]
     fn set_creates_missing_intermediate_objects() {
         let mut doc = json!({});
         set(&mut doc, &literal("$.a.b").unwrap(), json!(42)).unwrap();
@@ -506,7 +664,59 @@ mod tests {
     fn literal_rejects_wildcards_and_recursive_descent() {
         assert!(literal("$.a[*]").is_err());
         assert!(literal("$..a").is_err());
+        assert!(literal("$.a[?type==foo]").is_err());
         assert!(literal("$.a.b").is_ok());
+    }
+
+    #[test]
+    fn resolve_add_target_is_none_without_a_data_dependent_segment() {
+        let doc = json!({});
+        assert!(resolve_add_target(&doc, "$.a.b").unwrap().is_none());
+    }
+
+    #[test]
+    fn resolve_add_target_anchors_on_the_matching_filtered_element_and_keeps_the_suffix_as_is() {
+        let doc = json!({
+            "refs": [
+                {"type": "distribution", "url": "a"},
+                {"type": "other", "url": "b"}
+            ]
+        });
+        let anchors = resolve_add_target(&doc, "$.refs[?type==distribution].hashes")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            anchors,
+            vec![vec![
+                PathElem::Key("refs".into()),
+                PathElem::Index(0),
+                PathElem::Key("hashes".into()),
+            ]]
+        );
+        assert_eq!(get(&doc, &anchors[0]), None);
+    }
+
+    #[test]
+    fn resolve_add_target_creates_the_suffix_via_set_when_absent() {
+        let mut doc = json!({"refs": [{"type": "distribution"}]});
+        let anchors = resolve_add_target(&doc, "$.refs[?type==distribution].hashes")
+            .unwrap()
+            .unwrap();
+        assert_eq!(anchors.len(), 1);
+        set(&mut doc, &anchors[0], json!([{"alg": "SHA-256"}])).unwrap();
+        assert_eq!(
+            doc,
+            json!({"refs": [{"type": "distribution", "hashes": [{"alg": "SHA-256"}]}]})
+        );
+    }
+
+    #[test]
+    fn resolve_add_target_is_empty_when_the_filter_matches_nothing() {
+        let doc = json!({"refs": [{"type": "other"}]});
+        let anchors = resolve_add_target(&doc, "$.refs[?type==distribution].hashes")
+            .unwrap()
+            .unwrap();
+        assert!(anchors.is_empty());
     }
 
     #[test]

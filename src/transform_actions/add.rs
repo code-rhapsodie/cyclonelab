@@ -69,27 +69,62 @@ pub enum Generator {
 
 impl Action for AddStep {
     fn apply(&self, doc: &mut Value, ctx: &StepContext) -> Result<()> {
-        let path = jsonpath::literal(&self.target)
-            .with_context(|| format!("step '{}': invalid target '{}'", ctx.step_id, self.target))?;
+        let targets = self.resolve_targets(doc, ctx)?;
 
-        if let Some(when) = self.when {
-            match jsonpath::get(doc, &path) {
-                Some(existing) if jsonpath::matches(existing, Some(when)) => {}
-                _ => return Ok(()),
-            }
+        let targets: Vec<_> = targets
+            .into_iter()
+            .filter(|path| match self.when {
+                None => true,
+                Some(when) => {
+                    jsonpath::get(doc, path).is_some_and(|v| jsonpath::matches(v, Some(when)))
+                }
+            })
+            .collect();
+
+        if targets.is_empty() {
+            return Ok(());
         }
 
         let computed = self.compute_value(ctx)?;
-        jsonpath::set(doc, &path, computed).with_context(|| {
-            format!(
-                "step '{}': unable to write to '{}'",
-                ctx.step_id, self.target
-            )
-        })
+        for path in &targets {
+            jsonpath::set(doc, path, computed.clone()).with_context(|| {
+                format!(
+                    "step '{}': unable to write to '{}'",
+                    ctx.step_id, self.target
+                )
+            })?;
+        }
+        Ok(())
     }
 }
 
 impl AddStep {
+    /// Concrete locations `target` currently designates. A target with a
+    /// data-dependent segment (e.g. `[?type==distribution]`, see
+    /// `doc/transform/action-add.md#generator-hash`) may resolve to zero,
+    /// one, or several existing locations — zero is a no-op, not an error,
+    /// consistent with `util::jsonpath`. A plain target (the common case)
+    /// always resolves to exactly one location, which — unlike a
+    /// data-dependent one — need not already exist: `add` creates missing
+    /// intermediate objects along it.
+    fn resolve_targets(
+        &self,
+        doc: &Value,
+        ctx: &StepContext,
+    ) -> Result<Vec<jsonpath::ConcretePath>> {
+        match jsonpath::resolve_add_target(doc, &self.target)
+            .with_context(|| format!("step '{}': invalid target '{}'", ctx.step_id, self.target))?
+        {
+            Some(anchors) => Ok(anchors),
+            None => {
+                let path = jsonpath::literal(&self.target).with_context(|| {
+                    format!("step '{}': invalid target '{}'", ctx.step_id, self.target)
+                })?;
+                Ok(vec![path])
+            }
+        }
+    }
+
     fn compute_value(&self, ctx: &StepContext) -> Result<Value> {
         match &self.value_from {
             None => self.value.clone().with_context(|| {
@@ -309,6 +344,93 @@ mod tests {
         let mut doc = json!({"$schema": "old-schema"});
         step.apply(&mut doc, &ctx()).unwrap();
         assert_eq!(doc, json!({"$schema": "https://example.com/schema.json"}));
+    }
+
+    #[test]
+    fn filter_target_creates_the_missing_field_on_the_matching_element() {
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.externalReferences[?type==distribution].hashes",
+            "value": [{"alg": "SHA-256", "content": "deadbeef"}],
+        }))
+        .unwrap();
+        let mut doc = json!({
+            "externalReferences": [
+                {"type": "distribution", "url": "test"},
+                {"type": "website", "url": "other"},
+            ]
+        });
+        step.apply(&mut doc, &ctx()).unwrap();
+        assert_eq!(
+            doc,
+            json!({
+                "externalReferences": [
+                    {
+                        "type": "distribution",
+                        "url": "test",
+                        "hashes": [{"alg": "SHA-256", "content": "deadbeef"}],
+                    },
+                    {"type": "website", "url": "other"},
+                ]
+            })
+        );
+    }
+
+    #[test]
+    fn filter_target_overwrites_an_existing_field_on_the_matching_element() {
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.externalReferences[?type==distribution].hashes",
+            "value": [{"alg": "SHA-256", "content": "new"}],
+        }))
+        .unwrap();
+        let mut doc = json!({
+            "externalReferences": [
+                {"type": "distribution", "hashes": [{"alg": "SHA-256", "content": "old"}]},
+            ]
+        });
+        step.apply(&mut doc, &ctx()).unwrap();
+        assert_eq!(
+            doc["externalReferences"][0]["hashes"],
+            json!([{"alg": "SHA-256", "content": "new"}])
+        );
+    }
+
+    #[test]
+    fn filter_target_matching_nothing_is_a_noop() {
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.externalReferences[?type==distribution].hashes",
+            "value": [{"alg": "SHA-256", "content": "deadbeef"}],
+        }))
+        .unwrap();
+        let mut doc = json!({
+            "externalReferences": [{"type": "website", "url": "other"}]
+        });
+        let before = doc.clone();
+        step.apply(&mut doc, &ctx()).unwrap();
+        assert_eq!(doc, before);
+    }
+
+    #[test]
+    fn filter_target_writes_every_matching_element() {
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.externalReferences[?type==distribution].hashes",
+            "value": [{"alg": "SHA-256", "content": "deadbeef"}],
+        }))
+        .unwrap();
+        let mut doc = json!({
+            "externalReferences": [
+                {"type": "distribution", "url": "a"},
+                {"type": "distribution", "url": "b"},
+            ]
+        });
+        step.apply(&mut doc, &ctx()).unwrap();
+        assert_eq!(
+            doc["externalReferences"][0]["hashes"],
+            json!([{"alg": "SHA-256", "content": "deadbeef"}])
+        );
+        assert_eq!(
+            doc["externalReferences"][1]["hashes"],
+            json!([{"alg": "SHA-256", "content": "deadbeef"}])
+        );
     }
 
     #[test]
