@@ -293,3 +293,219 @@ fn does_not_write_the_output_file_when_a_step_breaks_schema_validation() {
         "OUTPUT_FILE must not be written when a step fails validation"
     );
 }
+
+#[test]
+fn foreach_produces_one_output_file_per_matching_artifact() {
+    let dir = tempfile::tempdir().unwrap();
+    let sbom = dir.path().join("sbom.json");
+    fs::copy(repo_path("tests/fixtures/sbom-1.5.cdx.json"), &sbom).unwrap();
+
+    fs::create_dir_all(dir.path().join("artifacts")).unwrap();
+    fs::write(dir.path().join("artifacts/a.zip"), b"a").unwrap();
+    fs::write(dir.path().join("artifacts/b.zip"), b"b").unwrap();
+    fs::write(dir.path().join("artifacts/note.txt"), b"not a zip").unwrap();
+    fs::create_dir_all(dir.path().join("dist")).unwrap();
+
+    let transform_file = dir.path().join("recipe.yaml");
+    fs::write(
+        &transform_file,
+        "foreach:\n  dir: artifacts\n  pattern: \"*.zip\"\nsteps:\n  - id: noop\n    action: add\n    target: $.metadata.timestamp\n    value: \"2020-01-01T00:00:00Z\"\n",
+    )
+    .unwrap();
+
+    let output = run(
+        dir.path(),
+        &[
+            sbom.to_str().unwrap(),
+            transform_file.to_str().unwrap(),
+            "dist/{$artifact_stem}-sbom.cdx.json",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(dir.path().join("dist/a-sbom.cdx.json").is_file());
+    assert!(dir.path().join("dist/b-sbom.cdx.json").is_file());
+    assert!(!dir.path().join("dist/note-sbom.cdx.json").exists());
+}
+
+#[test]
+fn foreach_warns_and_writes_nothing_when_no_file_matches() {
+    let dir = tempfile::tempdir().unwrap();
+    let sbom = dir.path().join("sbom.json");
+    fs::copy(repo_path("tests/fixtures/sbom-1.5.cdx.json"), &sbom).unwrap();
+
+    fs::create_dir_all(dir.path().join("artifacts")).unwrap();
+    fs::write(dir.path().join("artifacts/note.txt"), b"not a zip").unwrap();
+    fs::create_dir_all(dir.path().join("dist")).unwrap();
+
+    let transform_file = dir.path().join("recipe.yaml");
+    fs::write(
+        &transform_file,
+        "foreach:\n  dir: artifacts\n  pattern: \"*.zip\"\nsteps:\n  - id: noop\n    action: add\n    target: $.metadata.timestamp\n    value: \"2020-01-01T00:00:00Z\"\n",
+    )
+    .unwrap();
+
+    let output = run(
+        dir.path(),
+        &[
+            sbom.to_str().unwrap(),
+            transform_file.to_str().unwrap(),
+            "dist/{$artifact_stem}-sbom.cdx.json",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Warning: No file for '*.zip' was found in 'artifacts'."),
+        "stdout: {stdout}"
+    );
+    assert_eq!(
+        fs::read_dir(dir.path().join("dist")).unwrap().count(),
+        0,
+        "no output file must be written when nothing matches"
+    );
+}
+
+#[test]
+fn foreach_iteration_variables_are_substituted_in_a_step_and_in_output_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let sbom = dir.path().join("sbom.json");
+    fs::copy(repo_path("tests/fixtures/sbom-1.5.cdx.json"), &sbom).unwrap();
+
+    fs::create_dir_all(dir.path().join("artifacts")).unwrap();
+    fs::write(
+        dir.path().join("artifacts/cyclonelab-linux-x86_64.zip"),
+        b"a",
+    )
+    .unwrap();
+    fs::create_dir_all(dir.path().join("dist")).unwrap();
+
+    let transform_file = dir.path().join("recipe.yaml");
+    fs::write(
+        &transform_file,
+        "foreach:\n  dir: artifacts\n  pattern: \"cyclonelab*\"\nsteps:\n  \
+         - id: set-name\n    action: add\n    target: $.metadata.component.group\n    value: \"{$artifact_name}\"\n  \
+         - id: set-stem\n    action: add\n    target: $.metadata.component.version\n    value: \"{$artifact_stem}\"\n  \
+         - id: set-path\n    action: add\n    target: $.metadata.component.description\n    value: \"{$artifact_path}\"\n",
+    )
+    .unwrap();
+
+    let output = run(
+        dir.path(),
+        &[
+            sbom.to_str().unwrap(),
+            transform_file.to_str().unwrap(),
+            "dist/{$artifact_stem}-sbom.cdx.json",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let output_file = dir
+        .path()
+        .join("dist/cyclonelab-linux-x86_64-sbom.cdx.json");
+    let content =
+        fs::read_to_string(&output_file).expect("the templated OUTPUT_FILE must be written");
+    let bom: serde_json::Value = serde_json::from_str(&content).unwrap();
+    let component = &bom["metadata"]["component"];
+
+    assert_eq!(component["group"], "cyclonelab-linux-x86_64.zip");
+    assert_eq!(component["version"], "cyclonelab-linux-x86_64");
+    let description = component["description"].as_str().unwrap();
+    assert!(
+        description.ends_with("artifacts/cyclonelab-linux-x86_64.zip")
+            || description.ends_with("artifacts\\cyclonelab-linux-x86_64.zip"),
+        "description: {description}"
+    );
+}
+
+#[test]
+fn foreach_iterations_do_not_contaminate_each_other() {
+    let dir = tempfile::tempdir().unwrap();
+    let sbom = dir.path().join("sbom.json");
+    fs::copy(repo_path("tests/fixtures/sbom-1.5.cdx.json"), &sbom).unwrap();
+
+    fs::create_dir_all(dir.path().join("artifacts")).unwrap();
+    fs::write(dir.path().join("artifacts/a.zip"), b"a").unwrap();
+    fs::write(dir.path().join("artifacts/b.zip"), b"b").unwrap();
+    fs::create_dir_all(dir.path().join("dist")).unwrap();
+
+    let transform_file = dir.path().join("recipe.yaml");
+    fs::write(
+        &transform_file,
+        "foreach:\n  dir: artifacts\n  pattern: \"*.zip\"\nsteps:\n  \
+         - id: append-marker\n    action: merge\n    target: $.components[]\n    value: '[{\"type\": \"file\", \"bom-ref\": \"{$artifact_name}\", \"name\": \"{$artifact_name}\"}]'\n",
+    )
+    .unwrap();
+
+    let output = run(
+        dir.path(),
+        &[
+            sbom.to_str().unwrap(),
+            transform_file.to_str().unwrap(),
+            "dist/{$artifact_stem}-sbom.cdx.json",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    for stem in ["a", "b"] {
+        let content =
+            fs::read_to_string(dir.path().join(format!("dist/{stem}-sbom.cdx.json"))).unwrap();
+        let bom: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let components = bom["components"].as_array().unwrap();
+        assert_eq!(
+            components.len(),
+            2,
+            "iteration for '{stem}' must start from the original document (1 component) plus its own marker, not accumulate previous iterations': {components:?}"
+        );
+    }
+}
+
+#[test]
+fn foreach_rejects_a_declared_variable_that_collides_with_an_iteration_variable_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let sbom = dir.path().join("sbom.json");
+    fs::copy(repo_path("tests/fixtures/sbom-1.5.cdx.json"), &sbom).unwrap();
+
+    fs::create_dir_all(dir.path().join("artifacts")).unwrap();
+
+    let transform_file = dir.path().join("recipe.yaml");
+    fs::write(
+        &transform_file,
+        "foreach:\n  dir: artifacts\n  pattern: \"*.zip\"\nvariables:\n  artifact_name:\n    value: whatever\nsteps:\n  - id: noop\n    action: add\n    target: $.metadata.timestamp\n    value: \"2020-01-01T00:00:00Z\"\n",
+    )
+    .unwrap();
+
+    let output = run(
+        dir.path(),
+        &[
+            sbom.to_str().unwrap(),
+            transform_file.to_str().unwrap(),
+            "out.json",
+        ],
+    );
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("artifact_name"), "stderr: {stderr}");
+    assert!(!dir.path().join("out.json").exists());
+}

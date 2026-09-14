@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::{IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::Args;
@@ -14,6 +14,12 @@ use serde_json::Value;
 use crate::cyclonedx::validation::validate_bom;
 use crate::generator_tool;
 use crate::transform_actions::{self, Action, Step, StepContext};
+use crate::util::template::{matches_single_wildcard, render};
+
+/// Names of the ambient variables `foreach` injects for each matched file
+/// (see `doc/transform/foreach.md` §"Variables d'itération"): reserved, so a
+/// declared `variables:` entry cannot reuse one of them.
+const FOREACH_VAR_NAMES: [&str; 3] = ["artifact_name", "artifact_stem", "artifact_path"];
 
 #[derive(Debug, Args)]
 pub struct TransformArgs {
@@ -40,6 +46,8 @@ struct TransformFile {
     to: Option<String>,
     #[serde(default)]
     variables: HashMap<String, VariableDecl>,
+    #[serde(default)]
+    foreach: Option<ForeachDecl>,
     steps: Vec<Step>,
 }
 
@@ -51,6 +59,15 @@ struct VariableDecl {
     value: Option<Value>,
     #[serde(default)]
     required: bool,
+}
+
+/// `foreach:` root key (see `doc/transform/foreach.md`): repeats the whole
+/// `steps` pipeline once per file found in `dir` matching `pattern`, instead
+/// of running it once on a fixed `OUTPUT_FILE`.
+#[derive(Debug, Deserialize)]
+struct ForeachDecl {
+    dir: PathBuf,
+    pattern: String,
 }
 
 /// The outcome of resolving every declared variable: the ones that got a
@@ -81,6 +98,7 @@ pub fn run(args: &TransformArgs) -> Result<()> {
     let mut document = load_and_validate_sbom(&args.sbom_file)?;
     let transform_file = load_transform_file(&args.transform_file)?;
     transform_actions::validate_steps(&transform_file.steps)?;
+    check_foreach_variable_conflicts(transform_file.foreach.as_ref(), &transform_file.variables)?;
 
     if let Some(from) = &transform_file.from {
         let spec_version = document
@@ -103,15 +121,46 @@ pub fn run(args: &TransformArgs) -> Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
 
-    for step in &transform_file.steps {
-        let substituted = transform_actions::substitute_vars(step, &variables.resolved)?;
-        let ctx = StepContext::new(&base_dir, &substituted);
+    match &transform_file.foreach {
+        None => {
+            run_pipeline(
+                &mut document,
+                &transform_file.steps,
+                &base_dir,
+                &variables.resolved,
+            )?;
+            write_sbom(&args.output_file, &document)
+        }
+        Some(foreach) => run_foreach(
+            &document,
+            &transform_file.steps,
+            &base_dir,
+            &variables.resolved,
+            foreach,
+            &args.output_file,
+        ),
+    }
+}
+
+/// Runs the `steps` pipeline once against `document` (already substituting
+/// `{$var}` placeholders and revalidating after each step, see
+/// `doc/transform/README.md` §2), then registers `cyclonelab` as a tool —
+/// shared between the single-document path and each `foreach` iteration.
+fn run_pipeline(
+    document: &mut Value,
+    steps: &[Step],
+    base_dir: &Path,
+    vars: &[(String, String)],
+) -> Result<()> {
+    for step in steps {
+        let substituted = transform_actions::substitute_vars(step, vars)?;
+        let ctx = StepContext::new(base_dir, &substituted);
 
         substituted
-            .apply(&mut document, &ctx)
+            .apply(document, &ctx)
             .with_context(|| format!("step '{}'", substituted.id))?;
 
-        let outcome = validate_bom(&document).with_context(|| {
+        let outcome = validate_bom(document).with_context(|| {
             format!("step '{}': unable to validate the document", substituted.id)
         })?;
         if !outcome.errors.is_empty() {
@@ -129,10 +178,10 @@ pub fn run(args: &TransformArgs) -> Result<()> {
         }
     }
 
-    generator_tool::register_as_tool(&mut document)
+    generator_tool::register_as_tool(document)
         .context("unable to register cyclonelab in 'metadata.tools'")?;
 
-    let outcome = validate_bom(&document)
+    let outcome = validate_bom(document)
         .context("unable to validate the document after registering cyclonelab as a tool")?;
     if !outcome.errors.is_empty() {
         println!(
@@ -147,11 +196,116 @@ pub fn run(args: &TransformArgs) -> Result<()> {
         bail!("registering cyclonelab as a tool failed schema validation");
     }
 
-    let output = serde_json::to_string_pretty(&document)?;
-    fs::write(&args.output_file, output)
-        .with_context(|| format!("Unable to write '{}'", args.output_file.display()))?;
+    Ok(())
+}
 
-    println!("'{}' written.", args.output_file.display());
+/// Scans `foreach.dir` for files matching `foreach.pattern` (same matching
+/// and ordering as `generate_extension_sbom::run`) and, for each one, runs
+/// the `steps` pipeline on a fresh clone of `document` with the iteration's
+/// ambient variables (`$artifact_name`/`$artifact_stem`/`$artifact_path`)
+/// added to `vars`, then writes the result to `output_template` rendered
+/// with that same set of variables (see `doc/transform/foreach.md`).
+fn run_foreach(
+    document: &Value,
+    steps: &[Step],
+    base_dir: &Path,
+    vars: &[(String, String)],
+    foreach: &ForeachDecl,
+    output_template: &Path,
+) -> Result<()> {
+    if !foreach.dir.is_dir() {
+        bail!("Unable to find directory '{}'", foreach.dir.display());
+    }
+
+    let mut artifacts: Vec<PathBuf> = fs::read_dir(&foreach.dir)
+        .with_context(|| format!("Unable to read '{}'", foreach.dir.display()))?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| matches_single_wildcard(name, &foreach.pattern))
+        })
+        .collect();
+    artifacts.sort();
+
+    if artifacts.is_empty() {
+        println!(
+            "Warning: No file for '{}' was found in '{}'.",
+            foreach.pattern,
+            foreach.dir.display()
+        );
+        return Ok(());
+    }
+
+    for artifact_path in &artifacts {
+        let artifact_name = artifact_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .with_context(|| format!("Invalid file name '{}'", artifact_path.display()))?;
+        let artifact_stem = artifact_path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .with_context(|| format!("Invalid file name '{}'", artifact_path.display()))?;
+        let artifact_path_str = artifact_path
+            .to_str()
+            .with_context(|| format!("Invalid file path '{}'", artifact_path.display()))?;
+
+        let mut iteration_vars = vars.to_vec();
+        iteration_vars.push(("$artifact_name".to_string(), artifact_name.to_string()));
+        iteration_vars.push(("$artifact_stem".to_string(), artifact_stem.to_string()));
+        iteration_vars.push(("$artifact_path".to_string(), artifact_path_str.to_string()));
+
+        let mut iteration_document = document.clone();
+        run_pipeline(&mut iteration_document, steps, base_dir, &iteration_vars)?;
+
+        let output_file = render_output_path(output_template, &iteration_vars)?;
+        write_sbom(&output_file, &iteration_document)?;
+    }
+
+    Ok(())
+}
+
+/// Checks that no `variables:` entry reuses one of `foreach`'s reserved
+/// iteration variable names (see `doc/transform/foreach.md` §"Variables
+/// d'itération") — checked once at load time, regardless of how many (if
+/// any) files `foreach` will later match.
+fn check_foreach_variable_conflicts(
+    foreach: Option<&ForeachDecl>,
+    declared: &HashMap<String, VariableDecl>,
+) -> Result<()> {
+    if foreach.is_none() {
+        return Ok(());
+    }
+    for name in FOREACH_VAR_NAMES {
+        if declared.contains_key(name) {
+            bail!(
+                "variable '{name}' conflicts with the 'foreach' iteration variable of the same name"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Renders `template` (an `OUTPUT_FILE` argument) with `vars`, the same way
+/// a step's textual fields are substituted — used only when `foreach` is
+/// present (see `doc/transform/foreach.md` §"OUTPUT_FILE devient un
+/// gabarit"); without `foreach`, `OUTPUT_FILE` is used as-is.
+fn render_output_path(template: &Path, vars: &[(String, String)]) -> Result<PathBuf> {
+    let template_str = template
+        .to_str()
+        .with_context(|| format!("'{}' is not valid UTF-8", template.display()))?;
+    let pairs: Vec<(&str, &str)> = vars.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    Ok(PathBuf::from(render(template_str, &pairs)))
+}
+
+fn write_sbom(output_file: &Path, document: &Value) -> Result<()> {
+    let output = serde_json::to_string_pretty(document)?;
+    fs::write(output_file, output)
+        .with_context(|| format!("Unable to write '{}'", output_file.display()))?;
+
+    println!("'{}' written.", output_file.display());
     Ok(())
 }
 
