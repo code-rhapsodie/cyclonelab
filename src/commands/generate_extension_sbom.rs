@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::cyclonedx::Bom;
 use crate::generator_tool;
-use crate::util::download::download_file;
+use crate::util::download::download_and_hash_sha256;
 use crate::util::hashing::sha256_file;
 use crate::util::template::{matches_single_wildcard, render};
 
@@ -138,7 +138,7 @@ pub fn run(args: &GenerateExtensionSbomArgs) -> Result<()> {
         None => {
             println!("Download sources archive : {source_url}");
             let temp_source_zip = std::env::temp_dir().join(format!("{}.zip", Uuid::new_v4()));
-            let hash = download_and_hash(&source_url, &temp_source_zip)?;
+            let hash = download_and_hash_sha256(&source_url, &temp_source_zip)?;
             println!("Source archive Hash SHA256 : {hash}");
             hash
         }
@@ -194,13 +194,6 @@ pub fn run(args: &GenerateExtensionSbomArgs) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn download_and_hash(url: &str, dest: &PathBuf) -> Result<String> {
-    download_file(url, dest)?;
-    let hash = sha256_file(dest);
-    let _ = fs::remove_file(dest);
-    hash
 }
 
 #[cfg(test)]
