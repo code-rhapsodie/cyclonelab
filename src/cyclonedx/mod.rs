@@ -11,13 +11,10 @@
 //! `vulnerabilities`...), create a dedicated file in this module following
 //! the same principle.
 
-mod bom;
 mod component;
 mod hash;
 mod license;
-mod organization;
 pub mod validation;
 
-pub use bom::{Bom, Tools};
 pub use component::Component;
 pub use license::LicenseChoice;
