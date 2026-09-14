@@ -18,3 +18,16 @@ steps:
     target: $.metadata.component.manufacturer
     value: '{"name": "Code Rhapsodie", "url":["https://www.code-rhapsodie.fr"]}'
 
+  - id: external reference
+    action: merge
+    target: $.metadata.component.externalReferences[]
+    value: '[{
+    "type": "vcs",
+        "url": "https://github.com/code-rhapsodie/cyclonelab.git"
+      },{
+    "type": "issue-tracker",
+        "url": "https://github.com/code-rhapsodie/cyclonelab/issues"
+      },{
+    "type": "website",
+        "url": "https://www.code-rhapsodie.fr"
+      }]'
