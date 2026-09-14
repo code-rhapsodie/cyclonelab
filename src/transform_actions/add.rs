@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::util::download::download_and_hash_sha256;
+use crate::util::hashing::sha256_file;
 use crate::util::jsonpath::{self, JsonType};
 use crate::util::template::render_value;
 
@@ -40,6 +42,21 @@ pub struct ValueFrom {
     pub generator: Option<Generator>,
     #[serde(default)]
     pub format: Option<String>,
+    /// Hash algorithm to use, only for `generator: hash`. Only `sha256` is
+    /// currently supported.
+    #[serde(default)]
+    pub algo: Option<String>,
+    /// Path to a file already on disk to hash, only for `generator: hash`.
+    /// Resolved the same way as `valueFrom.file` (relative to the
+    /// transformation file's directory; an already-absolute path, e.g.
+    /// `{$artifact_path}` from `foreach`, is used as-is). Exclusive with
+    /// `url`.
+    #[serde(default)]
+    pub path: Option<PathBuf>,
+    /// URL to download and hash, only for `generator: hash`. Exclusive with
+    /// `path`.
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -47,6 +64,7 @@ pub struct ValueFrom {
 pub enum Generator {
     Uuid,
     Timestamp,
+    Hash,
 }
 
 impl Action for AddStep {
@@ -95,7 +113,7 @@ impl ValueFrom {
     fn resolve(&self, ctx: &StepContext) -> Result<Value> {
         match (&self.file, &self.generator) {
             (Some(file), None) => Self::read_file(file, ctx),
-            (None, Some(generator)) => Ok(generator.generate(self.format.as_deref())),
+            (None, Some(generator)) => generator.generate(self, ctx),
             (Some(_), Some(_)) => {
                 bail!(
                     "step '{}': 'valueFrom' cannot set both 'file' and 'generator'",
@@ -129,14 +147,62 @@ impl ValueFrom {
 }
 
 impl Generator {
-    fn generate(self, format: Option<&str>) -> Value {
+    fn generate(self, value_from: &ValueFrom, ctx: &StepContext) -> Result<Value> {
         match self {
-            Generator::Uuid => Value::String(Uuid::new_v4().to_string()),
+            Generator::Uuid => Ok(Value::String(Uuid::new_v4().to_string())),
             Generator::Timestamp => {
-                let format = format.unwrap_or("%Y-%m-%dT%H:%M:%SZ");
-                Value::String(Utc::now().format(format).to_string())
+                let format = value_from.format.as_deref().unwrap_or("%Y-%m-%dT%H:%M:%SZ");
+                Ok(Value::String(Utc::now().format(format).to_string()))
             }
+            Generator::Hash => Self::generate_hash(value_from, ctx),
         }
+    }
+
+    fn generate_hash(value_from: &ValueFrom, ctx: &StepContext) -> Result<Value> {
+        match value_from.algo.as_deref() {
+            Some("sha256") => {}
+            Some(other) => bail!(
+                "step '{}': unsupported hash algorithm '{}' (only 'sha256' is supported)",
+                ctx.step_id,
+                other
+            ),
+            None => bail!(
+                "step '{}': 'valueFrom.generator: hash' requires 'algo'",
+                ctx.step_id
+            ),
+        }
+
+        let hash = match (&value_from.path, &value_from.url) {
+            (Some(path), None) => {
+                let resolved = ctx.base_dir.join(path);
+                sha256_file(&resolved).with_context(|| {
+                    format!(
+                        "step '{}': unable to hash '{}'",
+                        ctx.step_id,
+                        resolved.display()
+                    )
+                })?
+            }
+            (None, Some(url)) => {
+                let temp_file = std::env::temp_dir().join(format!("{}.tmp", Uuid::new_v4()));
+                download_and_hash_sha256(url, &temp_file).with_context(|| {
+                    format!(
+                        "step '{}': unable to download and hash '{}'",
+                        ctx.step_id, url
+                    )
+                })?
+            }
+            (Some(_), Some(_)) => bail!(
+                "step '{}': 'valueFrom' cannot set both 'path' and 'url'",
+                ctx.step_id
+            ),
+            (None, None) => bail!(
+                "step '{}': 'valueFrom.generator: hash' needs either 'path' or 'url'",
+                ctx.step_id
+            ),
+        };
+
+        Ok(Value::String(hash))
     }
 }
 
@@ -264,5 +330,161 @@ mod tests {
         };
         let err = step.apply(&mut doc, &ctx).unwrap_err();
         assert!(err.to_string().contains("bad.json"));
+    }
+
+    /// sha256("hello world"), verified with `sha256sum` outside this test.
+    const HELLO_WORLD_SHA256: &str =
+        "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+
+    #[test]
+    fn generator_hash_sha256_with_path_matches_the_expected_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("artifact.bin");
+        fs::write(&file_path, b"hello world").unwrap();
+
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.metadata.hash",
+            "valueFrom": {"generator": "hash", "algo": "sha256", "path": "artifact.bin"},
+        }))
+        .unwrap();
+        let mut doc = json!({"metadata": {}});
+        let ctx = StepContext {
+            base_dir: dir.path().to_path_buf(),
+            step_id: "test-step".to_string(),
+            description: None,
+        };
+        step.apply(&mut doc, &ctx).unwrap();
+        assert_eq!(doc["metadata"]["hash"], HELLO_WORLD_SHA256);
+    }
+
+    #[test]
+    fn generator_hash_sha256_with_url_hashes_the_downloaded_content() {
+        let url = spawn_single_response_http_server(b"hello world");
+
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.metadata.hash",
+            "valueFrom": {"generator": "hash", "algo": "sha256", "url": url},
+        }))
+        .unwrap();
+        let mut doc = json!({"metadata": {}});
+        step.apply(&mut doc, &ctx()).unwrap();
+        assert_eq!(doc["metadata"]["hash"], HELLO_WORLD_SHA256);
+    }
+
+    #[test]
+    fn generator_hash_rejects_an_unsupported_algo() {
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.metadata.hash",
+            "valueFrom": {"generator": "hash", "algo": "md5", "path": "artifact.bin"},
+        }))
+        .unwrap();
+        let mut doc = json!({"metadata": {}});
+        let err = step.apply(&mut doc, &ctx()).unwrap_err();
+        assert!(err.to_string().contains("md5"));
+    }
+
+    #[test]
+    fn generator_hash_requires_either_path_or_url() {
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.metadata.hash",
+            "valueFrom": {"generator": "hash", "algo": "sha256"},
+        }))
+        .unwrap();
+        let mut doc = json!({"metadata": {}});
+        let err = step.apply(&mut doc, &ctx()).unwrap_err();
+        assert!(err.to_string().contains("path") && err.to_string().contains("url"));
+    }
+
+    #[test]
+    fn generator_hash_rejects_path_and_url_together() {
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.metadata.hash",
+            "valueFrom": {
+                "generator": "hash",
+                "algo": "sha256",
+                "path": "artifact.bin",
+                "url": "http://example.invalid/artifact.bin",
+            },
+        }))
+        .unwrap();
+        let mut doc = json!({"metadata": {}});
+        let err = step.apply(&mut doc, &ctx()).unwrap_err();
+        assert!(err.to_string().contains("path") && err.to_string().contains("url"));
+    }
+
+    #[test]
+    fn generator_hash_with_a_missing_path_is_a_step_error() {
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.metadata.hash",
+            "valueFrom": {"generator": "hash", "algo": "sha256", "path": "does-not-exist.bin"},
+        }))
+        .unwrap();
+        let mut doc = json!({"metadata": {}});
+        let err = step.apply(&mut doc, &ctx()).unwrap_err();
+        assert!(err.to_string().contains("does-not-exist.bin"));
+    }
+
+    #[test]
+    fn generator_hash_wrapped_in_a_native_yaml_hashes_array() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("artifact.bin");
+        fs::write(&file_path, b"hello world").unwrap();
+
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.metadata.component.hashes",
+            "valueFrom": {"generator": "hash", "algo": "sha256", "path": "artifact.bin"},
+            "value": [{"alg": "SHA-256", "content": "{@value}"}],
+        }))
+        .unwrap();
+        let mut doc = json!({"metadata": {"component": {}}});
+        let ctx = StepContext {
+            base_dir: dir.path().to_path_buf(),
+            step_id: "test-step".to_string(),
+            description: None,
+        };
+        step.apply(&mut doc, &ctx).unwrap();
+        assert_eq!(
+            doc["metadata"]["component"]["hashes"],
+            json!([{"alg": "SHA-256", "content": HELLO_WORLD_SHA256}])
+        );
+    }
+
+    #[test]
+    fn value_as_a_json_looking_quoted_string_is_posed_literally_not_reparsed() {
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.metadata.raw",
+            "valueFrom": {"generator": "uuid"},
+            "value": "[{\"a\": \"{@value}\"}]",
+        }))
+        .unwrap();
+        let mut doc = json!({"metadata": {}});
+        step.apply(&mut doc, &ctx()).unwrap();
+        let raw = doc["metadata"]["raw"].as_str().unwrap();
+        assert!(raw.starts_with("[{\"a\": \""));
+        assert!(raw.ends_with("\"}]"));
+    }
+
+    /// Minimal single-shot HTTP/1.1 server returning `body` for one request,
+    /// used to exercise `valueFrom.url` without depending on network access
+    /// or an HTTP-mocking crate.
+    fn spawn_single_response_http_server(body: &'static [u8]) -> String {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.write_all(body);
+            }
+        });
+        format!("http://{addr}/")
     }
 }
