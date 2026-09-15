@@ -240,6 +240,16 @@ fn run_foreach(
     }
 
     for artifact_path in &artifacts {
+        // Absolute, so that it stays correct wherever it is later reused
+        // (e.g. as `valueFrom.path`/`valueFrom.file`, resolved relative to
+        // the transformation file's directory, not `foreach.dir`'s — see
+        // `doc/transform/foreach.md` and `action-add.md`).
+        let artifact_path = std::path::absolute(artifact_path).with_context(|| {
+            format!(
+                "Unable to resolve an absolute path for '{}'",
+                artifact_path.display()
+            )
+        })?;
         let artifact_name = artifact_path
             .file_name()
             .and_then(|name| name.to_str())
