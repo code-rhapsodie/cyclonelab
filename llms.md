@@ -314,8 +314,10 @@ steps: [...]
 
 When present, `SBOM_FILE` is loaded/validated once, then the whole `steps` pipeline runs once per file in `dir`
 matching `pattern` (files only, sorted by name), each time against a fresh clone of the loaded document — one
-iteration's edits never leak into the next. If nothing matches, a warning is printed and the command exits 0 without
-writing any output file. Each iteration additionally injects three read-only variables (reserved: declaring a
+iteration's edits never leak into the next. If nothing matches, the command fails (non-zero exit) without writing
+any output file, rather than silently succeeding — a pattern that matches nothing usually means a configuration
+mistake (wrong `dir`/`pattern`, artifacts not generated yet), which should not look like success to a caller that
+only checks the exit code. Each iteration additionally injects three read-only variables (reserved: declaring a
 `variables:` entry with one of these names is a load-time error):
 
 - `{$artifact_name}` — the matched file's name with extension.
