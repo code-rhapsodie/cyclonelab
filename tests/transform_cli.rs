@@ -365,8 +365,12 @@ fn foreach_warns_and_writes_nothing_when_no_file_matches() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let expected_dir = dir.path().join("artifacts");
     assert!(
-        stdout.contains("Warning: No file for '*.zip' was found in 'artifacts'."),
+        stdout.contains(&format!(
+            "Warning: No file for '*.zip' was found in '{}'.",
+            expected_dir.display()
+        )),
         "stdout: {stdout}"
     );
     assert_eq!(
@@ -435,20 +439,22 @@ fn foreach_iteration_variables_are_substituted_in_a_step_and_in_output_file() {
 
 #[test]
 fn foreach_artifact_path_stays_correct_when_the_process_runs_outside_the_transform_files_directory()
- {
-    // Regression test for issue #36: `foreach.dir` is resolved relative to
-    // the process's current directory, while `valueFrom.path` is resolved
-    // relative to the transformation file's directory (see
-    // `doc/transform/foreach.md`). `{$artifact_path}` must stay correct when
-    // those two directories differ.
+{
+    // Regression test for issue #36: `foreach.dir` and `valueFrom.path` are
+    // both resolved relative to the transformation file's directory (see
+    // `doc/transform/foreach.md`), which can differ from the process's
+    // current directory. `{$artifact_path}` must stay correct either way.
     let dir = tempfile::tempdir().unwrap();
     let sbom = dir.path().join("sbom.json");
     fs::copy(repo_path("tests/fixtures/sbom-1.5.cdx.json"), &sbom).unwrap();
 
-    fs::create_dir_all(dir.path().join("artifacts")).unwrap();
-    fs::write(dir.path().join("artifacts/artifact.bin"), b"hello world").unwrap();
+    fs::create_dir_all(dir.path().join("recipe/artifacts")).unwrap();
+    fs::write(
+        dir.path().join("recipe/artifacts/artifact.bin"),
+        b"hello world",
+    )
+    .unwrap();
 
-    fs::create_dir_all(dir.path().join("recipe")).unwrap();
     let transform_file = dir.path().join("recipe/recipe.yaml");
     fs::write(
         &transform_file,
