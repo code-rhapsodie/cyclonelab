@@ -1,7 +1,7 @@
 # cyclonelab
 
 > `cyclonelab` is a CLI for generating and manipulating [CycloneDX](https://cyclonedx.org/) Software Bills of
-> Materials (SBOMs). It ships four subcommands — `generate-extension-sbom`, `validate`, `transform`, `suggest` — and
+> Materials (SBOMs). It ships three subcommands — `validate`, `transform`, `suggest` — and
 > supports CycloneDX spec versions **1.5**, **1.6**, and **1.7** (JSON only). This file gives an LLM (ChatGPT, Gemini,
 > Claude, ...) enough detail to write correct `cyclonelab` invocations and valid `transform` YAML recipes.
 
@@ -11,7 +11,6 @@ Binary name: `cyclonelab`. Global flags: `-h`/`--help`, `-V`/`--version`. Every 
 cyclonelab <COMMAND>
 
 Commands:
-  generate-extension-sbom  Instantiate an SBOM template for each compiled PHP extension in an artifact folder
   validate                 Check that a file is valid JSON and conforms to the CycloneDX schema
   transform                Apply a declarative YAML transformation recipe to a CycloneDX SBOM
   suggest                  Suggest useful component/metadata fields missing from a CycloneDX SBOM
@@ -29,10 +28,10 @@ cyclonelab validate <FILE>
 ```
 
 Reads `FILE`, checks it is well-formed JSON, extracts `specVersion`, and validates it against the matching bundled
-CycloneDX JSON Schema (`schema/bom-1.5.schema.json`, `bom-1.6.schema.json`, or `bom-1.7.schema.json`). Any other
-`specVersion` value is an explicit "unsupported specVersion" error. On success: prints `'<file>' is a valid CycloneDX
-<version> SBOM.` and exits 0. On failure: prints one `  - <jsonPath>: <message>` line per schema error and exits
-non-zero. `transform` reuses the exact same validation logic (see below).
+CycloneDX JSON Schema for that version. Any other `specVersion` value is an explicit "unsupported specVersion" error.
+On success: prints `'<file>' is a valid CycloneDX <version> SBOM.` and exits 0. On failure: prints one
+`  - <jsonPath>: <message>` line per schema error and exits non-zero. `transform` reuses the exact same validation
+logic (see below).
 
 ## `cyclonelab suggest`
 
@@ -47,8 +46,7 @@ document — `metadata.component`, any `components[]` entry (top-level, nested i
 `externalReferences`, `pedigree`, `evidence`, `scope`, `signature`, `cryptoProperties`, `data`, `modelCard`. It also
 flags the document's `metadata` object if it has no `supplier`, and flags any `licenses[].license` entry that has a
 free-text `name` but no SPDX `id`. Output format: `<jsonPath>: <reason>`, one per line; if nothing is missing it
-prints a single "no suggestions" line. (An experimental `CYCLONELAB_SUGGEST_JSON=1` JSON-array output exists behind
-the non-default `json-output` Cargo feature — not part of the stable CLI.)
+prints a single "no suggestions" line.
 
 ## `cyclonelab transform`
 
@@ -76,16 +74,13 @@ document's `specVersion`, else error; (4) resolve every declared variable; (5) r
 (alongside any tools already listed, refreshing its own entry if present rather than duplicating it — handles both
 the modern `{components:[...]}` shape and the legacy bare-array `Tools` shape); (7) write `OUTPUT_FILE`.
 
-Full reference recipes ship in the repo and can be used as-is or as templates: `schema/upgrade-1.5-to-1.6.yaml`,
-`schema/upgrade-1.6-to-1.7.yaml`, `schema/transform.yaml`. Design rationale and edge cases are documented per-topic
-under `doc/transform/` (`README.md`, `foreach.md`, and one `action-<name>.md` file per action) — consult those for
-anything this summary doesn't cover.
+See "Configuration examples" below for complete, runnable recipes covering the common cases (adding fields,
+upgrading a spec version, iterating over a folder with `foreach`).
 
 ### Recipe file format
 
 ```yaml
 from: "1.5"          # optional: specVersion required on the input SBOM (checked before running)
-to: "1.6"             # optional, purely informational
 
 foreach:              # optional: repeat the whole pipeline once per matched file, see "foreach" below
   dir: <path>
@@ -229,8 +224,8 @@ array, if absent) — an existing non-array value there is an explicit step erro
 
 ### Action `transform`
 
-Structural changes a plain `move` can't express: type changes, wrapping into an array, field remapping. Implemented
-in `src/transform_actions/structural.rs` (kept as a distinct name from the `transform` *command* itself).
+Structural changes a plain `move` can't express: type changes, wrapping into an array, field remapping. (This is the
+`transform` *action*, distinct from the `transform` *command* the whole recipe runs under.)
 
 ```yaml
 - id: <string>
@@ -289,9 +284,11 @@ any step runs).
 ### Action `upgrade`
 
 Brings the document from its current `specVersion` to `version_target` by injecting, right at this point in the
-pipeline, the steps of every embedded `schema/upgrade-X-to-Y.yaml` recipe needed to chain between them — as if those
-steps had been pasted in. Lets a "business" recipe rely on a field shape introduced by a newer schema version (e.g.
+pipeline, the steps of every bundled upgrade recipe needed to chain between them — as if those steps had been pasted
+in. Lets a "business" recipe rely on a field shape introduced by a newer schema version (e.g.
 `metadata.tools.components[]`, absent in 1.5) before continuing with its own steps.
+
+This action upgrade all necessary properties to obtain a valid SBOM with the new version. The `specVersion` is updated too.
 
 ```yaml
 - id: <string>
@@ -335,32 +332,124 @@ cyclonelab transform template-sbom.cdx.json recipe.yaml "dist/{$artifact_stem}-s
 
 ## CycloneDX specifics
 
-- **Supported `specVersion` values**: `1.5`, `1.6`, `1.7` — JSON format only. The bundled JSON Schemas live in
-  `schema/bom-1.5.schema.json`, `schema/bom-1.6.schema.json`, `schema/bom-1.7.schema.json` (plus
-  `schema/cryptography-defs.schema.json`, `schema/jsf-0.82.schema.json`, `schema/spdx.schema.json` as embedded
-  `$ref` targets, resolved offline — no network fetch during validation).
-  Every other `specVersion` value is rejected with an explicit "unsupported specVersion" error, both by `validate`
-  and before `transform` runs.
-- **Upgrade paths**: `1.5 → 1.6` (`schema/upgrade-1.5-to-1.6.yaml`) and `1.6 → 1.7` (`schema/upgrade-1.6-to-1.7.yaml`)
-  are ready-to-use `transform` recipes, and are also what the `upgrade` action chains internally. There is currently
-  no path that skips or reverses these two steps.
-- **`metadata.tools`**: whenever `transform` finishes a run, or `generate-extension-sbom` writes a new file,
-  `cyclonelab` registers itself as a tool. `generate-extension-sbom` replaces `metadata.tools` outright (a freshly
-  generated document has no prior tool history to preserve); `transform` instead adds/refreshes its own entry
-  alongside whatever tools are already listed, in whichever of the two valid `metadata.tools` shapes the document
-  already uses: the current object form (`{"components": [...]}`, a full CycloneDX `Component` entry) or the
-  deprecated bare-array form (`[{vendor, name, version}, ...]`, added in the reduced shape that legacy schema
-  actually allows). Running `transform` again refreshes this generator's own entry in place rather than duplicating
-  it (matched by `group`+`name`, or `vendor`+`name` in the legacy array form).
+- **Supported `specVersion` values**: `1.5`, `1.6`, `1.7` — JSON format only. The matching JSON Schema is bundled and
+  resolved offline (no network fetch during validation). Every other `specVersion` value is rejected with an
+  explicit "unsupported specVersion" error, both by `validate` and before `transform` runs.
+- **Upgrade paths**: `1.5 → 1.6` and `1.6 → 1.7` are the two bundled upgrade recipes, and are also what the
+  `upgrade` action chains internally. There is currently no path that skips or reverses these two steps.
+- **`metadata.tools`**: whenever `transform` finishes a run, `cyclonelab` registers itself as a tool — adding or
+  refreshing its own entry alongside whatever tools are already listed, in whichever of the two valid
+  `metadata.tools` shapes the document already uses: the current object form (`{"components": [...]}`, a full
+  CycloneDX `Component` entry) or the deprecated bare-array form (`[{vendor, name, version}, ...]`, added in the
+  reduced shape that legacy schema actually allows). Running `transform` again refreshes this generator's own entry
+  in place rather than duplicating it (matched by `group`+`name`, or `vendor`+`name` in the legacy array form).
 - A `manual` step's warning and the `suggest` command are both advisory only — neither blocks `transform`/`validate`
   from succeeding.
 
-## Further reading in this repository
+## Configuration examples
 
-- `README.md` — installation, release verification.
-- `doc/transform/README.md` — full design rationale for `transform` (in French).
-- `doc/transform/foreach.md`, `doc/transform/action-add.md`, `action-remove.md`, `action-move.md`, `action-merge.md`,
-  `action-transform.md`, `action-manual.md`, `action-upgrade.md` — one deep-dive per action (in French).
-- `schema/transform.yaml`, `schema/upgrade-1.5-to-1.6.yaml`, `schema/upgrade-1.6-to-1.7.yaml` — real, runnable recipe
-  examples.
-- `templates/template-sbom.cdx.json` — the template consumed by `generate-extension-sbom`.
+### Add fields, generate a UUID, hash a file
+
+```yaml
+variables:
+  supplier_name:
+    env: SBOM_SUPPLIER_NAME
+    value: "ACME Corp"
+  repo:
+    required: true
+
+steps:
+  - id: set serial number
+    action: add
+    target: $.serialNumber
+    valueFrom:
+      generator: uuid
+    value: "urn:uuid:{@value}"
+
+  - id: set timestamp
+    action: add
+    target: $.metadata.timestamp
+    valueFrom:
+      generator: timestamp
+
+  - id: set supplier
+    action: add
+    target: $.metadata.component.supplier
+    value:
+      name: "{$supplier_name}"
+      url: ["https://github.com/{$repo}"]
+
+  - id: hash the built artifact
+    action: add
+    target: $.metadata.component.hashes
+    valueFrom:
+      generator: hash
+      algo: sha256
+      path: "dist/artifact.tar.gz"
+    value:
+      - alg: SHA-256
+        content: "{@value}"
+```
+
+Run with:
+
+```
+cyclonelab transform sbom.json add-fields.yaml sbom.out.json \
+  --variable repo=code-rhapsodie/cyclonelab
+```
+
+### Upgrade an SBOM to a newer spec version
+
+```yaml
+steps:
+  - id: upgrade to 1.7
+    action: upgrade
+    version_target: "1.7"
+```
+
+```
+cyclonelab transform sbom-1.5.json upgrade.yaml sbom-1.7.json
+```
+
+### Remove and rename fields, merge a fragment
+
+```yaml
+steps:
+  - id: drop internal notes
+    action: remove
+    target: $..internalNotes
+
+  - id: rename legacy field
+    action: move
+    source: $.metadata.component.vendor
+    target: $.metadata.component.manufacturer
+
+  - id: merge extra properties
+    action: merge
+    target: $.metadata.component.properties[]
+    value: '[{"name": "build:pipeline", "value": "ci"}]'
+```
+
+### Iterate over a folder of artifacts (`foreach`)
+
+```yaml
+foreach:
+  dir: dist/artifacts
+  pattern: "*.tar.gz"
+
+steps:
+  - id: hash artifact
+    action: add
+    target: $.metadata.component.externalReferences[?type==distribution].hashes
+    valueFrom:
+      generator: hash
+      algo: sha256
+      path: "{$artifact_path}"
+    value:
+      - alg: SHA-256
+        content: "{@value}"
+```
+
+```
+cyclonelab transform template-sbom.json foreach.yaml "dist/{$artifact_stem}-sbom.json"
+```
