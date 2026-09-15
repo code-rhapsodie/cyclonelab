@@ -319,8 +319,9 @@ writing any output file. Each iteration additionally injects three read-only var
 
 - `{$artifact_name}` — the matched file's name with extension.
 - `{$artifact_stem}` — the matched file's name without extension.
-- `{$artifact_path}` — the matched file's full path (`dir/artifact_name`) — typically fed straight into
-  `valueFrom.path` of a `generator: hash` step.
+- `{$artifact_path}` — the matched file's **absolute** path (even when `dir` is given as relative) — typically fed
+  straight into `valueFrom.path` of a `generator: hash` step, which resolves a relative path from `TRANSFORM_FILE`'s
+  directory instead of the current working directory; being absolute keeps it correct across that difference.
 
 With `foreach` present, the CLI's `OUTPUT_FILE` argument becomes a template rendered with the same variables (global + 
 current iteration) before each write, e.g.:
