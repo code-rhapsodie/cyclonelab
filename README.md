@@ -4,9 +4,7 @@ A generator and manipulation tool for [CycloneDX](https://cyclonedx.org/) 1.7 So
 
 `cyclonelab` is organized as a CLI with one subcommand per capability. It is not tied to any single ecosystem: the data
 model (`src/cyclonedx`) implements the CycloneDX schema itself — components, licenses, hashes, tool metadata — and is
-meant to grow new subcommands over time for whatever SBOM-generation or SBOM-editing task is needed next. The first
-subcommand shipped, `generate-extension-sbom`, happens to target compiled PHP extension archives, but that's just
-today's use case, not a constraint on the project.
+meant to grow new subcommands over time for whatever SBOM-generation or SBOM-editing task is needed next.
 
 ## Installation
 
@@ -41,30 +39,18 @@ Generator and manipulation tool for CycloneDX 1.7 SBOMs
 Usage: cyclonelab <COMMAND>
 
 Commands:
-  generate-extension-sbom  Instantiates an SBOM template for each compiled PHP extension in an artifact folder
-  help                     Print this message or the help of the given subcommand(s)
+  validate   Checks that a file is valid JSON and conforms to the CycloneDX schema
+  transform  Applies a declarative transformation recipe to a CycloneDX SBOM
+  suggest    Suggests useful component fields missing from a CycloneDX SBOM
+  help       Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help     Print help
   -V, --version  Print version
 ```
 
-### `generate-extension-sbom`
-
-Instantiates a CycloneDX SBOM template for each archive found in an artifact folder, substituting placeholders
-(`{@version}`, `{@date_now}`, hashes, download URLs, ...) and registering `cyclonelab` as the sole `metadata.tools`
-entry.
-
-```sh
-cyclonelab generate-extension-sbom \
-  --version 2.3.0 \
-  --php-version 8.3 \
-  --template-path templates/template-sbom.cdx.json \
-  --artifacts-dir artifacts \
-  --repo owner/name
-```
-
-Run `cyclonelab generate-extension-sbom --help` for the full list of options and their defaults.
+Run `cyclonelab <COMMAND> --help` for each subcommand's full list of options; see `llms.md` for detailed usage and the
+`transform` YAML recipe format.
 
 ## Verifying release provenance
 

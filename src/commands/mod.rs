@@ -5,7 +5,6 @@
 //! function, then register it in `crate::cli::Commands` and in
 //! `crate::cli::Cli::run`.
 
-pub mod generate_extension_sbom;
 pub mod suggest;
 pub mod transform;
 pub mod validate;

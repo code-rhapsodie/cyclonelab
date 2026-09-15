@@ -199,8 +199,8 @@ fn run_pipeline(
     Ok(())
 }
 
-/// Scans `foreach.dir` for files matching `foreach.pattern` (same matching
-/// and ordering as `generate_extension_sbom::run`) and, for each one, runs
+/// Scans `foreach.dir` for files matching `foreach.pattern` (sorted by name)
+/// and, for each one, runs
 /// the `steps` pipeline on a fresh clone of `document` with the iteration's
 /// ambient variables (`$artifact_name`/`$artifact_stem`/`$artifact_path`)
 /// added to `vars`, then writes the result to `output_template` rendered

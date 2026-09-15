@@ -5,7 +5,7 @@
 use anyhow::Result;
 use serde_json::{Map, Value, json};
 
-use crate::cyclonedx::{Bom, Component, LicenseChoice, Tools};
+use crate::cyclonedx::{Component, LicenseChoice};
 use crate::version;
 
 pub fn component() -> Component {
@@ -24,19 +24,11 @@ pub fn component() -> Component {
         ))
 }
 
-/// Declares this generator as the sole tool that produced the BOM,
-/// replacing `metadata.tools` if it already existed.
-pub fn set_as_sole_tool(bom: &mut Bom) {
-    bom.metadata_mut().tools = Some(Tools::set_single_component(component()));
-}
-
 /// Records this generator's own entry in `metadata.tools`, alongside
-/// whatever tools are already listed there — unlike [`set_as_sole_tool`],
-/// which replaces the whole list for a freshly generated BOM, this is for
-/// commands (like `transform`) that update an existing SBOM and must
-/// preserve the provenance of the tools that already produced it. Running
-/// it again (e.g. a second `transform` pass) refreshes this generator's own
-/// entry in place instead of appending a duplicate.
+/// whatever tools are already listed there, preserving the provenance of
+/// the tools that already produced the SBOM. Running it again (e.g. a
+/// second `transform` pass) refreshes this generator's own entry in place
+/// instead of appending a duplicate.
 ///
 /// Operates directly on the `serde_json::Value` document (see
 /// `doc/transform/README.md` §7.2) rather than the typed [`Bom`], since the

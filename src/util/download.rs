@@ -22,9 +22,7 @@ pub fn download_file(url: &str, dest: &Path) -> Result<()> {
 }
 
 /// Downloads `url` to `dest`, hashes the downloaded file with SHA-256, then
-/// deletes `dest` — equivalent to the original PowerShell script's
-/// download+hash step, shared here between `generate-extension-sbom` and
-/// `add`'s `hash` generator (`valueFrom.url`).
+/// deletes `dest` — used by `add`'s `hash` generator (`valueFrom.url`).
 pub fn download_and_hash_sha256(url: &str, dest: &Path) -> Result<String> {
     download_file(url, dest)?;
     let hash = sha256_file(dest);
