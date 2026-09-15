@@ -213,12 +213,16 @@ fn run_foreach(
     foreach: &ForeachDecl,
     output_template: &Path,
 ) -> Result<()> {
-    if !foreach.dir.is_dir() {
-        bail!("Unable to find directory '{}'", foreach.dir.display());
+    // Relative to `base_dir` (the transformation file's directory), like
+    // `valueFrom.file`/`valueFrom.path` — an already-absolute `dir` is used
+    // as-is (see `doc/transform/foreach.md` and `action-add.md`).
+    let dir = base_dir.join(&foreach.dir);
+    if !dir.is_dir() {
+        bail!("Unable to find directory '{}'", dir.display());
     }
 
-    let mut artifacts: Vec<PathBuf> = fs::read_dir(&foreach.dir)
-        .with_context(|| format!("Unable to read '{}'", foreach.dir.display()))?
+    let mut artifacts: Vec<PathBuf> = fs::read_dir(&dir)
+        .with_context(|| format!("Unable to read '{}'", dir.display()))?
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
         .filter(|path| path.is_file())
@@ -234,12 +238,23 @@ fn run_foreach(
         println!(
             "Warning: No file for '{}' was found in '{}'.",
             foreach.pattern,
-            foreach.dir.display()
+            dir.display()
         );
         return Ok(());
     }
 
     for artifact_path in &artifacts {
+        // Absolute, so that it stays correct wherever it is later reused
+        // (e.g. as `valueFrom.path`/`valueFrom.file`): `artifact_path`
+        // already has `base_dir` baked in through `dir` above, and those
+        // fields independently join `base_dir` onto whatever they are given
+        // — a relative `artifact_path` would get `base_dir` applied twice.
+        let artifact_path = std::path::absolute(artifact_path).with_context(|| {
+            format!(
+                "Unable to resolve an absolute path for '{}'",
+                artifact_path.display()
+            )
+        })?;
         let artifact_name = artifact_path
             .file_name()
             .and_then(|name| name.to_str())

@@ -83,7 +83,7 @@ upgrading a spec version, iterating over a folder with `foreach`).
 from: "1.5"          # optional: specVersion required on the input SBOM (checked before running)
 
 foreach:              # optional: repeat the whole pipeline once per matched file, see "foreach" below
-  dir: <path>
+  dir: <path, relative to TRANSFORM_FILE's directory>
   pattern: <single-'*' glob>
 
 variables:            # optional
@@ -305,7 +305,8 @@ load time otherwise, listing the versions actually reachable. If the document is
 
 ```yaml
 foreach:
-  dir: <path, resolved from the current working directory — NOT from TRANSFORM_FILE's directory>
+  dir: <path, relative to TRANSFORM_FILE's directory — same convention as valueFrom.file/valueFrom.path; an
+        already-absolute path is used as-is>
   pattern: <single-'*' glob, matched against file names only>
 
 steps: [...]
@@ -319,8 +320,10 @@ writing any output file. Each iteration additionally injects three read-only var
 
 - `{$artifact_name}` — the matched file's name with extension.
 - `{$artifact_stem}` — the matched file's name without extension.
-- `{$artifact_path}` — the matched file's full path (`dir/artifact_name`) — typically fed straight into
-  `valueFrom.path` of a `generator: hash` step.
+- `{$artifact_path}` — the matched file's **absolute** path, regardless of whether `dir` was given as relative or
+  absolute — typically fed straight into `valueFrom.path` of a `generator: hash` step. It is kept absolute so it
+  resolves correctly there even though `valueFrom.path` independently applies the same "relative to TRANSFORM_FILE's
+  directory" rule: a relative `{$artifact_path}` would otherwise get that directory prepended a second time.
 
 With `foreach` present, the CLI's `OUTPUT_FILE` argument becomes a template rendered with the same variables (global + 
 current iteration) before each write, e.g.:

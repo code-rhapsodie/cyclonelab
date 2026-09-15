@@ -365,8 +365,12 @@ fn foreach_warns_and_writes_nothing_when_no_file_matches() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let expected_dir = dir.path().join("artifacts");
     assert!(
-        stdout.contains("Warning: No file for '*.zip' was found in 'artifacts'."),
+        stdout.contains(&format!(
+            "Warning: No file for '*.zip' was found in '{}'.",
+            expected_dir.display()
+        )),
         "stdout: {stdout}"
     );
     assert_eq!(
@@ -430,6 +434,63 @@ fn foreach_iteration_variables_are_substituted_in_a_step_and_in_output_file() {
         description.ends_with("artifacts/cyclonelab-linux-x86_64.zip")
             || description.ends_with("artifacts\\cyclonelab-linux-x86_64.zip"),
         "description: {description}"
+    );
+}
+
+#[test]
+fn foreach_artifact_path_stays_correct_when_the_process_runs_outside_the_transform_files_directory()
+{
+    // Regression test for issue #36: `foreach.dir` and `valueFrom.path` are
+    // both resolved relative to the transformation file's directory (see
+    // `doc/transform/foreach.md`), which can differ from the process's
+    // current directory. `{$artifact_path}` must stay correct either way.
+    let dir = tempfile::tempdir().unwrap();
+    let sbom = dir.path().join("sbom.json");
+    fs::copy(repo_path("tests/fixtures/sbom-1.5.cdx.json"), &sbom).unwrap();
+
+    fs::create_dir_all(dir.path().join("recipe/artifacts")).unwrap();
+    fs::write(
+        dir.path().join("recipe/artifacts/artifact.bin"),
+        b"hello world",
+    )
+    .unwrap();
+
+    let transform_file = dir.path().join("recipe/recipe.yaml");
+    fs::write(
+        &transform_file,
+        "foreach:\n  dir: artifacts\n  pattern: \"*.bin\"\nsteps:\n  \
+         - id: hash\n    action: add\n    target: $.metadata.component.hashes\n    \
+         valueFrom: {generator: hash, algo: sha256, path: \"{$artifact_path}\"}\n    \
+         value: [{alg: \"SHA-256\", content: \"{@value}\"}]\n",
+    )
+    .unwrap();
+
+    let output_file = dir.path().join("sbom-out.json");
+    let output = run(
+        dir.path(),
+        &[
+            sbom.to_str().unwrap(),
+            transform_file.to_str().unwrap(),
+            output_file.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let content = fs::read_to_string(&output_file).unwrap();
+    let bom: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(
+        bom["metadata"]["component"]["hashes"],
+        // sha256("hello world"), verified with `sha256sum` outside this test
+        // (same digest as `add.rs`'s `HELLO_WORLD_SHA256`).
+        serde_json::json!([{
+            "alg": "SHA-256",
+            "content": "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+        }])
     );
 }
 
