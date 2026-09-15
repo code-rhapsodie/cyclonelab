@@ -334,7 +334,7 @@ fn foreach_produces_one_output_file_per_matching_artifact() {
 }
 
 #[test]
-fn foreach_warns_and_writes_nothing_when_no_file_matches() {
+fn foreach_fails_and_writes_nothing_when_no_file_matches() {
     let dir = tempfile::tempdir().unwrap();
     let sbom = dir.path().join("sbom.json");
     fs::copy(repo_path("tests/fixtures/sbom-1.5.cdx.json"), &sbom).unwrap();
@@ -358,20 +358,15 @@ fn foreach_warns_and_writes_nothing_when_no_file_matches() {
             "dist/{$artifact_stem}-sbom.cdx.json",
         ],
     );
-    assert!(
-        output.status.success(),
-        "stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
     let expected_dir = dir.path().join("artifacts");
     assert!(
-        stdout.contains(&format!(
-            "Warning: No file for '*.zip' was found in '{}'.",
+        stderr.contains(&format!(
+            "No file for '*.zip' was found in '{}'",
             expected_dir.display()
         )),
-        "stdout: {stdout}"
+        "stderr: {stderr}"
     );
     assert_eq!(
         fs::read_dir(dir.path().join("dist")).unwrap().count(),

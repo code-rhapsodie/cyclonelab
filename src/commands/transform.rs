@@ -235,12 +235,11 @@ fn run_foreach(
     artifacts.sort();
 
     if artifacts.is_empty() {
-        println!(
-            "Warning: No file for '{}' was found in '{}'.",
+        bail!(
+            "No file for '{}' was found in '{}'",
             foreach.pattern,
             dir.display()
         );
-        return Ok(());
     }
 
     for artifact_path in &artifacts {
