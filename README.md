@@ -52,6 +52,15 @@ Options:
 Run `cyclonelab <COMMAND> --help` for each subcommand's full list of options; see `llms.md` for detailed usage and the
 `transform` YAML recipe format.
 
+## Scope: building and enriching a single SBOM
+
+`cyclonelab` focuses on building and enriching a single SBOM: generating one, validating it, and applying
+transformations to it. It does not merge multiple SBOMs into one.
+
+If your release pipeline produces several SBOMs (for example one per image, service, or ecosystem) and you need to
+combine them into a single consolidated SBOM, use the [CycloneDX CLI](https://github.com/CycloneDX/cyclonedx-cli)'s
+`merge` command as a separate step in your CI, before or after running `cyclonelab` on the result.
+
 ## Verifying release provenance
 
 Every binary published on the [Releases page](https://github.com/code-rhapsodie/cyclonelab/releases) carries
