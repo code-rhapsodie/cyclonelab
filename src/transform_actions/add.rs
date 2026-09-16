@@ -40,6 +40,10 @@ pub struct ValueFrom {
     pub file: Option<PathBuf>,
     #[serde(default)]
     pub generator: Option<Generator>,
+    /// For `generator: timestamp`, a `strftime` format. For `file`, how to
+    /// interpret its content: `"text"` reads it as a raw string (e.g. a
+    /// license file to embed as evidence); omitted or `"json"` parses it as
+    /// JSON (the default, unchanged behaviour).
     #[serde(default)]
     pub format: Option<String>,
     /// Hash algorithm to use, only for `generator: hash`. Only `sha256` is
@@ -69,6 +73,15 @@ pub enum Generator {
 
 impl Action for AddStep {
     fn apply(&self, doc: &mut Value, ctx: &StepContext) -> Result<()> {
+        // A trailing `[]` selects the "append to array" form instead of the
+        // default "replace" form — same convention as `merge` (see
+        // `doc/transform/action-merge.md`), needed to combine several
+        // `valueFrom.file` reads (e.g. one per license) into a single array
+        // without one step's `add` overwriting the previous one's.
+        if let Some(prefix) = self.target.strip_suffix("[]") {
+            return self.apply_append(prefix, doc, ctx);
+        }
+
         let targets = self.resolve_targets(doc, ctx)?;
 
         let targets: Vec<_> = targets
@@ -99,6 +112,55 @@ impl Action for AddStep {
 }
 
 impl AddStep {
+    /// `target[]` form: appends the computed value (which must itself be an
+    /// array) to the array already at `target` (or creates it, if absent),
+    /// instead of replacing whatever is there — mirrors
+    /// `merge`'s `target[]` append form, but on the native `Value` computed
+    /// by `value`/`valueFrom` rather than on a re-parsed JSON string, so a
+    /// `valueFrom.file`/`format: text` read (e.g. a license's raw text) never
+    /// needs JSON-escaping. `when` isn't meaningful here (there is no single
+    /// existing value to guard on) and is rejected.
+    fn apply_append(&self, target: &str, doc: &mut Value, ctx: &StepContext) -> Result<()> {
+        if self.when.is_some() {
+            bail!(
+                "step '{}': 'when' is not supported when 'target' ends with '[]'",
+                ctx.step_id
+            );
+        }
+
+        let Value::Array(new_items) = self.compute_value(ctx)? else {
+            bail!(
+                "step '{}': 'value' must be an array because target '{}' ends with '[]'",
+                ctx.step_id,
+                self.target
+            );
+        };
+
+        let path = jsonpath::literal(target)
+            .with_context(|| format!("step '{}': invalid target '{}'", ctx.step_id, self.target))?;
+
+        let merged = match jsonpath::get(doc, &path) {
+            Some(Value::Array(existing)) => {
+                let mut merged = existing.clone();
+                merged.extend(new_items);
+                Value::Array(merged)
+            }
+            Some(_) => bail!(
+                "step '{}': target '{}' ends with '[]' but the existing value is not an array",
+                ctx.step_id,
+                self.target
+            ),
+            None => Value::Array(new_items),
+        };
+
+        jsonpath::set(doc, &path, merged).with_context(|| {
+            format!(
+                "step '{}': unable to write to '{}'",
+                ctx.step_id, self.target
+            )
+        })
+    }
+
     /// Concrete locations `target` currently designates. A target with a
     /// data-dependent segment (e.g. `[?type==distribution]`, see
     /// `doc/transform/action-add.md#generator-hash`) may resolve to zero,
@@ -147,7 +209,7 @@ impl AddStep {
 impl ValueFrom {
     fn resolve(&self, ctx: &StepContext) -> Result<Value> {
         match (&self.file, &self.generator) {
-            (Some(file), None) => Self::read_file(file, ctx),
+            (Some(file), None) => Self::read_file(file, self.format.as_deref(), ctx),
             (None, Some(generator)) => generator.generate(self, ctx),
             (Some(_), Some(_)) => {
                 bail!(
@@ -162,7 +224,13 @@ impl ValueFrom {
         }
     }
 
-    fn read_file(file: &PathBuf, ctx: &StepContext) -> Result<Value> {
+    /// Reads `file` (relative to `ctx.base_dir`) — always a hard step error
+    /// if it can't be read, so a recipe never silently ships without the
+    /// evidence/content it was meant to embed. `format` then decides how the
+    /// content becomes the step's value: `"text"` keeps it as a raw string
+    /// (e.g. a license file); omitted or `"json"` parses it as JSON, as
+    /// before.
+    fn read_file(file: &PathBuf, format: Option<&str>, ctx: &StepContext) -> Result<Value> {
         let path = ctx.base_dir.join(file);
         let content = fs::read_to_string(&path).with_context(|| {
             format!(
@@ -171,13 +239,21 @@ impl ValueFrom {
                 path.display()
             )
         })?;
-        serde_json::from_str(&content).with_context(|| {
-            format!(
-                "step '{}': '{}' is not valid JSON",
-                ctx.step_id,
-                path.display()
-            )
-        })
+        match format {
+            None | Some("json") => serde_json::from_str(&content).with_context(|| {
+                format!(
+                    "step '{}': '{}' is not valid JSON",
+                    ctx.step_id,
+                    path.display()
+                )
+            }),
+            Some("text") => Ok(Value::String(content)),
+            Some(other) => bail!(
+                "step '{}': unsupported 'valueFrom.format' \"{other}\" for 'valueFrom.file' \
+                 (expected \"text\", or omit it for JSON)",
+                ctx.step_id
+            ),
+        }
     }
 }
 
@@ -452,6 +528,138 @@ mod tests {
         };
         let err = step.apply(&mut doc, &ctx).unwrap_err();
         assert!(err.to_string().contains("bad.json"));
+    }
+
+    #[test]
+    fn value_from_file_format_text_reads_the_raw_content_as_a_string() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("LICENSE.txt");
+        fs::write(
+            &file_path,
+            "Not JSON, just a license: \"quotes\" and\nnewlines.\n",
+        )
+        .unwrap();
+
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.metadata.component.licenses",
+            "valueFrom": {"file": "LICENSE.txt", "format": "text"},
+            "value": [{"license": {"text": {"content": "{@value}"}}}],
+        }))
+        .unwrap();
+        let mut doc = json!({"metadata": {"component": {}}});
+        let ctx = StepContext {
+            base_dir: dir.path().to_path_buf(),
+            step_id: "test-step".to_string(),
+            description: None,
+        };
+        step.apply(&mut doc, &ctx).unwrap();
+        assert_eq!(
+            doc["metadata"]["component"]["licenses"],
+            json!([{"license": {"text": {"content": "Not JSON, just a license: \"quotes\" and\nnewlines.\n"}}}])
+        );
+    }
+
+    #[test]
+    fn value_from_file_format_text_on_a_missing_file_is_a_step_error() {
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.metadata.extra",
+            "valueFrom": {"file": "does-not-exist.txt", "format": "text"},
+        }))
+        .unwrap();
+        let mut doc = json!({"metadata": {}});
+        let err = step.apply(&mut doc, &ctx()).unwrap_err();
+        assert!(err.to_string().contains("does-not-exist.txt"));
+    }
+
+    #[test]
+    fn value_from_file_rejects_an_unsupported_format() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("file.txt"), "content").unwrap();
+
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.metadata.extra",
+            "valueFrom": {"file": "file.txt", "format": "yaml"},
+        }))
+        .unwrap();
+        let mut doc = json!({"metadata": {}});
+        let ctx = StepContext {
+            base_dir: dir.path().to_path_buf(),
+            step_id: "test-step".to_string(),
+            description: None,
+        };
+        let err = step.apply(&mut doc, &ctx).unwrap_err();
+        assert!(err.to_string().contains("yaml"));
+    }
+
+    #[test]
+    fn append_target_appends_to_an_existing_array_without_losing_prior_items() {
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.metadata.component.evidence.licenses[]",
+            "value": [{"license": {"id": "AGPL-3.0"}}],
+        }))
+        .unwrap();
+        let mut doc = json!({
+            "metadata": {"component": {"evidence": {"licenses": [{"license": {"id": "EUPL-1.2"}}]}}}
+        });
+        step.apply(&mut doc, &ctx()).unwrap();
+        assert_eq!(
+            doc["metadata"]["component"]["evidence"]["licenses"],
+            json!([{"license": {"id": "EUPL-1.2"}}, {"license": {"id": "AGPL-3.0"}}])
+        );
+    }
+
+    #[test]
+    fn append_target_creates_the_array_when_absent() {
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.metadata.component.evidence.licenses[]",
+            "value": [{"license": {"id": "EUPL-1.2"}}],
+        }))
+        .unwrap();
+        let mut doc = json!({"metadata": {"component": {"evidence": {}}}});
+        step.apply(&mut doc, &ctx()).unwrap();
+        assert_eq!(
+            doc["metadata"]["component"]["evidence"]["licenses"],
+            json!([{"license": {"id": "EUPL-1.2"}}])
+        );
+    }
+
+    #[test]
+    fn append_target_rejects_a_non_array_value() {
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.metadata.component.evidence.licenses[]",
+            "value": {"license": {"id": "EUPL-1.2"}},
+        }))
+        .unwrap();
+        let mut doc = json!({"metadata": {"component": {"evidence": {}}}});
+        let err = step.apply(&mut doc, &ctx()).unwrap_err();
+        assert!(err.to_string().contains("must be an array"));
+    }
+
+    #[test]
+    fn append_target_rejects_an_existing_non_array_value() {
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.metadata.component.evidence.licenses[]",
+            "value": [{"license": {"id": "EUPL-1.2"}}],
+        }))
+        .unwrap();
+        let mut doc = json!({
+            "metadata": {"component": {"evidence": {"licenses": {"not": "an array"}}}}
+        });
+        let err = step.apply(&mut doc, &ctx()).unwrap_err();
+        assert!(err.to_string().contains("is not an array"));
+    }
+
+    #[test]
+    fn append_target_rejects_when_combined_with_when() {
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.metadata.component.evidence.licenses[]",
+            "value": [{"license": {"id": "EUPL-1.2"}}],
+            "when": "array",
+        }))
+        .unwrap();
+        let mut doc = json!({"metadata": {"component": {"evidence": {}}}});
+        let err = step.apply(&mut doc, &ctx()).unwrap_err();
+        assert!(err.to_string().contains("'when' is not supported"));
     }
 
     /// sha256("hello world"), verified with `sha256sum` outside this test.

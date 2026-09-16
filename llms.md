@@ -142,16 +142,16 @@ Writes a value at `target`, creating missing intermediate *objects* along the wa
 ```yaml
 - id: <string>
   action: add
-  target: <JSONPath>
+  target: <JSONPath>                  # a trailing '[]' switches to "append to array" mode, like merge
   value: <literal or template>        # native YAML — not a JSON string to re-parse
   valueFrom:                          # optional, exactly one of value/valueFrom.generator/valueFrom.file supplies the raw value
     file: <path, relative to TRANSFORM_FILE's directory>
     generator: uuid | timestamp | hash
-    format: <strftime format, generator: timestamp only>
+    format: <strftime format for generator: timestamp; "text" or "json" (default) for file, see below>
     algo: sha256                      # generator: hash only — sha256 is the only supported algorithm today
     path: <file path, generator: hash only, exclusive with url>
     url: <URL, generator: hash only, exclusive with path>
-  when: string | object | array       # optional; only touch target if its current value already has this type
+  when: string | object | array       # optional; only touch target if its current value already has this type — not allowed with target[]
 ```
 
 - `value` alone: a literal, native YAML — `value: "1.6"` stays a string, `value: [ {a: 1} ]` stays an array/object.
@@ -161,9 +161,17 @@ Writes a value at `target`, creating missing intermediate *objects* along the wa
 - `valueFrom.generator: timestamp` — current UTC time, formatted with `format` (default `%Y-%m-%dT%H:%M:%SZ`).
 - `valueFrom.generator: hash` — SHA-256 of a local file (`path`, resolved like `valueFrom.file`) or a downloaded URL
   (`url`); exactly one of `path`/`url` is required.
-- `valueFrom.file` — reads and JSON-parses a file (after `{$var}` substitution) as the value.
+- `valueFrom.file` — reads a file (hard step error if it's missing or unreadable, never a silent skip) and turns its
+  content into the value, per `valueFrom.format`: absent or `"json"` (default) JSON-parses it; `"text"` uses the raw
+  file content as-is, as a string — no JSON parsing, no `{$var}` substitution on the content itself — for including a
+  non-JSON file (e.g. a license's text) without copying it into the transform YAML; any other `format` value is a
+  step error.
 - When `valueFrom` is used, the raw generated/read value is exposed as `{@value}` for `value` to wrap (e.g.
   `value: "urn:uuid:{@value}"`); if `value` is omitted, the raw value is written as-is.
+- Trailing `[]` on `target` (same convention as `merge`): `value` (or the value resolved via `valueFrom`) must be a
+  native YAML array; its elements are appended to the array already at `target` (or become it, if absent) — errors if
+  `target` exists and isn't an array, or if `when` is set (append mode only makes sense for a single known value, not
+  a conditional rewrite of several wildcard-resolved targets).
 
 Example (hash a foreach artifact into an existing `externalReferences` entry selected by `type`):
 
@@ -178,6 +186,25 @@ Example (hash a foreach artifact into an existing `externalReferences` entry sel
   value:
     - alg: SHA-256
       content: "{@value}"
+```
+
+Example (license evidence included from a file on disk, instead of inlined in the transform YAML — appended to an
+existing `evidence.licenses` array):
+
+```yaml
+- id: add EUPL license evidence
+  action: add
+  target: $.metadata.component.evidence.licenses[]
+  valueFrom:
+    file: ../LICENSE-EUPL-1.2
+    format: text
+  value:
+    - license:
+        id: EUPL-1.2
+        acknowledgement: declared
+        text:
+          contentType: text/plain
+          content: "{@value}"
 ```
 
 ### Action `remove`
@@ -401,6 +428,51 @@ Run with:
 ```
 cyclonelab transform sbom.json add-fields.yaml sbom.out.json \
   --variable repo=code-rhapsodie/cyclonelab
+```
+
+### Add license evidence from files on disk
+
+Instead of copying license texts into the transform YAML, `valueFrom.file` + `format: text` reads them from files
+already in the repo — a missing or unreadable file is a hard step error, so a forgotten license never goes unnoticed.
+Each license is added with its own `add` step, appended to the same `evidence.licenses` array via the trailing `[]`
+on `target` (real example adapted from `.github/transform-sbom.yaml`, which generates cyclonelab's own release SBOMs
+this way):
+
+```yaml
+steps:
+  - id: add EUPL license evidence
+    action: add
+    description: >
+      Attach the full text of the EUPL-1.2 license as evidence, read from the repo's LICENSE-EUPL-1.2 file rather
+      than duplicated in this YAML, so it always matches the actual license text.
+    target: $.metadata.component.evidence.licenses[]
+    valueFrom:
+      file: LICENSE-EUPL-1.2
+      format: text
+    value:
+      - license:
+          id: EUPL-1.2
+          acknowledgement: declared
+          url: "https://spdx.org/licenses/EUPL-1.2.html"
+          text:
+            contentType: text/plain
+            content: "{@value}"
+
+  - id: add AGPL license evidence
+    action: add
+    description: Same as above, for AGPL-3.0, read from LICENSE-AGPL-3.0.
+    target: $.metadata.component.evidence.licenses[]
+    valueFrom:
+      file: LICENSE-AGPL-3.0
+      format: text
+    value:
+      - license:
+          id: AGPL-3.0
+          acknowledgement: declared
+          url: "https://spdx.org/licenses/AGPL-3.0-only.html"
+          text:
+            contentType: text/plain
+            content: "{@value}"
 ```
 
 ### Upgrade an SBOM to a newer spec version
