@@ -92,13 +92,13 @@ jobs:
       - name: Stage SBOM
         run: |
           mkdir -p dist
-          cp ${{ env.BIN_NAME }}-sbom.json dist/${{ env.BIN_NAME }}-sbom.cdx.json
+          cp ${{ env.BIN_NAME }}-sbom.json dist/sbom-template.cdx.json
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: ${{ env.BIN_NAME }}-sbom
-          path: dist/${{ env.BIN_NAME }}-sbom.cdx.json
+          path: dist/sbom-template.cdx.json
           if-no-files-found: error
 
   release:
@@ -110,11 +110,29 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
       - name: Download artifacts
         uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
+
+      - name: Transform SBOM
+        run: |
+          chmod +x dist/cyclonelab-linux-x86_64
+          VERSION="${GITHUB_REF_NAME#v}"
+          # `transform-sbom.yaml`'s `foreach` iterates over every released
+          # binary in dist/ (pattern "cyclonelab-*") and writes one SBOM per
+          # binary, each with its own distribution externalReference/hash.
+          dist/cyclonelab-linux-x86_64 transform \
+            dist/sbom-template.cdx.json \
+            .github/transform-sbom.yaml \
+            'dist/{$artifact_stem}-sbom.cdx.json' \
+            --variable version="$VERSION" \
+            --variable tag="$GITHUB_REF_NAME"
+          rm dist/sbom-template.cdx.json
 
       - name: Generate build provenance
         uses: actions/attest-build-provenance@v4
