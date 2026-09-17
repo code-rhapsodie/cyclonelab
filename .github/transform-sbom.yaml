@@ -3,6 +3,14 @@ variables:
     required: true
   tag:
     required: true
+  manufacturer:
+    value: Code Rhapsodie
+  website:
+    value: "https://www.code-rhapsodie.fr"
+  author_name:
+    value:  "Jean-Baptiste Nahan"
+  author_email:
+    value: "jean-baptiste@code-rhapsodie.fr"
 
 foreach:
   dir: ../dist
@@ -12,7 +20,36 @@ steps:
   - id: upgrade
     action: upgrade
     version_target: "1.7"
+  - id: add supplier
+    action: add
+    target: $.metadata.supplier
+    value:
+      name: "{$manufacturer}"
+      address:
+        country: "FR"
+      url:
+        - "{$website}"
+      contact:
+        - name: "{$author_name}"
+          email: "{$author_email}"
 
+  - id: add component supplier
+    action: add
+    description: >
+      Same organizationalEntity as metadata.supplier (the BOM's supplier) above, duplicated onto
+      metadata.component.supplier (the component's own supplier) -- the transform engine's `add`/`merge` can't
+      source a value from elsewhere in the document, only from a literal, a file, or a generator, so this repeats
+      the literal instead of copying.
+    target: $.metadata.component.supplier
+    value:
+      name: "{$manufacturer}"
+      address:
+        country: "FR"
+      url:
+        - "{$website}"
+      contact:
+        - name: "{$author_name}"
+          email: "{$author_email}"
   - id: fix component purl
     action: add
     description: >
@@ -23,6 +60,16 @@ steps:
       in metadata.tools.
     target: $.metadata.component.purl
     value: "pkg:generic/code-rhapsodie/cyclonelab@{$version}"
+
+  - id: add cpe id
+    action: add
+    target: $.metadata.component.cpe
+    value: "cpe:2.3:a:code-rhapsodie:cyclonelab:{$version}:*:*:*:*:*:*:*"
+
+  - id: add metadata component group
+    action: add
+    target: $.metadata.component.group
+    value: "code-rhapsodie"
 
   - id: remove build target subcomponents
     action: remove
@@ -78,12 +125,12 @@ steps:
   - id: add author
     action: merge
     target: $.metadata.component.authors
-    value: '[{"name": "Jean-Baptiste NAHAN", "email":"jean-baptiste@code-rhapsodie.fr"}]'
+    value: '[{"name": "{$author_name}", "email":"{$author_email}"}]'
 
   - id: add manufacturer
     action: merge
     target: $.metadata.component.manufacturer
-    value: '{"name": "Code Rhapsodie", "url":["https://www.code-rhapsodie.fr"]}'
+    value: '{"name": "{$manufacturer}", "url":["{$website}"]}'
 
   - id: external reference
     action: merge
@@ -96,7 +143,7 @@ steps:
         "url": "https://github.com/code-rhapsodie/cyclonelab/issues"
       },{
     "type": "website",
-        "url": "https://www.code-rhapsodie.fr"
+        "url": "{$website}"
       },{
     "type": "license",
         "url": "https://spdx.org/licenses/EUPL-1.2.html"
