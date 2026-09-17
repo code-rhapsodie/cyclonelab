@@ -20,9 +20,15 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             asset_name: cyclonelab-linux-x86_64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset_name: cyclonelab-linux-arm64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             asset_name: cyclonelab-windows-x86_64.exe
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            asset_name: cyclonelab-windows-arm64.exe
           - os: macos-latest
             target: aarch64-apple-darwin
             asset_name: cyclonelab-macos-arm64
