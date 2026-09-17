@@ -77,6 +77,8 @@ gh attestation verify ./cyclonelab-linux-x86_64 --repo code-rhapsodie/cyclonelab
 A successful verification confirms the binary matches an attestation signed by the `code-rhapsodie/cyclonelab` release
 workflow. Don't run a binary whose attestation fails to verify.
 
+If you want to verify with [cosign](https://github.com/sigstore/cosign), use these options: `--certificate-oidc-issuer="https://token.actions.githubusercontent.com" --certificate-identity-regexp="^https://github.com/code-rhapsodie/cyclonelab/"`
+
 ## License
 
 Dual-licensed under your choice of:
