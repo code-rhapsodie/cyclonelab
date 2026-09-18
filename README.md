@@ -6,6 +6,10 @@ A generator and manipulation tool for [CycloneDX](https://cyclonedx.org/) 1.7 So
 model (`src/cyclonedx`) implements the CycloneDX schema itself — components, licenses, hashes, tool metadata — and is
 meant to grow new subcommands over time for whatever SBOM-generation or SBOM-editing task is needed next.
 
+To generate a transform recipe with LLM, a prompt example is provided into [llms_prompt_example.md](llms_prompt_example.md).
+
+You can provide the file [llms.md](llms.md) to your favorite LLM to explain how to cyclonelab work.
+
 ## Installation
 
 ### Prebuilt binaries
