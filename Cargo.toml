@@ -11,7 +11,8 @@ path = "src/main.rs"
 
 [features]
 # Experimental JSON output for `suggest` (see `CYCLONELAB_SUGGEST_JSON` in
-# src/commands/suggest.rs). Off by default: not part of the stable CLI yet.
+# src/commands/suggest.rs) and `lint` (see `CYCLONELAB_LINT_JSON` in
+# src/commands/lint.rs). Off by default: not part of the stable CLI yet.
 json-output = []
 
 [dependencies]
