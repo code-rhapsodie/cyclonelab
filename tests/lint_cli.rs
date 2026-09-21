@@ -164,6 +164,121 @@ fn warns_about_a_variable_declared_but_never_used() {
 }
 
 #[test]
+#[cfg(feature = "json-output")]
+fn prints_json_when_the_env_var_is_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let transform_file = dir.path().join("recipe.yaml");
+    fs::write(
+        &transform_file,
+        "variables:\n  unused:\n    value: whatever\nsteps:\n  - id: noop\n    action: add\n    target: $.a\n    value: 1\n",
+    )
+    .unwrap();
+
+    let output = cyclonelab()
+        .current_dir(dir.path())
+        .env("CYCLONELAB_LINT_JSON", "1")
+        .arg("lint")
+        .arg(transform_file.to_str().unwrap())
+        .output()
+        .expect("the cyclonelab binary must be able to run");
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));
+    assert_eq!(json["valid"], true);
+    let warnings = json["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1);
+    assert!(warnings[0].as_str().unwrap().contains("unused"));
+}
+
+#[test]
+#[cfg(feature = "json-output")]
+fn prints_a_json_error_when_a_hard_error_occurs_and_the_env_var_is_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let transform_file = dir.path().join("recipe.yaml");
+    fs::write(
+        &transform_file,
+        "steps:\n  - id: typo\n    action: add\n    target: $.a\n    value: \"{$versoin}\"\n",
+    )
+    .unwrap();
+
+    let output = cyclonelab()
+        .current_dir(dir.path())
+        .env("CYCLONELAB_LINT_JSON", "1")
+        .arg("lint")
+        .arg(transform_file.to_str().unwrap())
+        .output()
+        .expect("the cyclonelab binary must be able to run");
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).is_empty(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));
+    assert_eq!(json["valid"], false);
+    let error = json["error"].as_str().unwrap();
+    assert!(
+        error.contains("versoin") && error.contains("never declared"),
+        "error: {error}"
+    );
+}
+
+#[test]
+#[cfg(feature = "json-output")]
+fn prints_a_json_error_when_the_transform_file_is_missing() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let output = cyclonelab()
+        .current_dir(dir.path())
+        .env("CYCLONELAB_LINT_JSON", "1")
+        .arg("lint")
+        .arg("missing-transform.yaml")
+        .output()
+        .expect("the cyclonelab binary must be able to run");
+
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));
+    assert_eq!(json["valid"], false);
+    assert!(
+        json["error"]
+            .as_str()
+            .unwrap()
+            .contains("Unable to find transformation file")
+    );
+}
+
+#[test]
+#[cfg(feature = "json-output")]
+fn does_not_print_json_when_the_env_var_is_unset() {
+    let dir = tempfile::tempdir().unwrap();
+    let transform_file = dir.path().join("recipe.yaml");
+    fs::write(
+        &transform_file,
+        "steps:\n  - id: noop\n    action: add\n    target: $.a\n    value: 1\n",
+    )
+    .unwrap();
+
+    let output = run(dir.path(), &[transform_file.to_str().unwrap()]);
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("looks valid"));
+    assert!(serde_json::from_str::<serde_json::Value>(&stdout).is_err());
+}
+
+#[test]
 fn accepts_foreach_iteration_variables_without_declaring_them() {
     let dir = tempfile::tempdir().unwrap();
     let transform_file = dir.path().join("recipe.yaml");
