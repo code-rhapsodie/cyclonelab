@@ -68,9 +68,9 @@ fn upgrades_the_real_fixture_from_1_5_to_1_7_through_both_recipes() {
     let bom: serde_json::Value = serde_json::from_str(&content).unwrap();
 
     assert_eq!(bom["specVersion"], "1.7");
-    assert!(
-        bom.get("$schema").is_none(),
-        "the fixture never set $schema, it must stay absent"
+    assert_eq!(
+        bom["$schema"], "http://cyclonedx.org/schema/bom-1.7.schema.json",
+        "the upgrade must point $schema at the target version's schema, even when the fixture never set it"
     );
     assert!(bom["metadata"].get("manufacture").is_none());
     assert!(bom["metadata"]["tools"].is_object());
