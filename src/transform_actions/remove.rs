@@ -1,7 +1,7 @@
 //! `remove` action: deletes the value present at a location in the document
 //! (see `doc/transform/action-remove.md`).
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -14,6 +14,15 @@ pub struct RemoveStep {
     pub target: String,
     #[serde(default)]
     pub when: Option<JsonType>,
+}
+
+impl RemoveStep {
+    /// Static check performable without a document: `target`'s JSONPath
+    /// syntax — used by `lint`.
+    pub(crate) fn lint(&self) -> Result<()> {
+        jsonpath::check_syntax(&self.target)
+            .with_context(|| format!("invalid target '{}'", self.target))
+    }
 }
 
 impl Action for RemoveStep {
@@ -67,6 +76,18 @@ mod tests {
         let mut doc = json!({"field": 1, "nested": {"field": 2, "other": 3}});
         step.apply(&mut doc, &ctx()).unwrap();
         assert_eq!(doc, json!({"nested": {"other": 3}}));
+    }
+
+    #[test]
+    fn lint_accepts_a_valid_target() {
+        let step: RemoveStep = serde_json::from_value(json!({"target": "$..field"})).unwrap();
+        step.lint().unwrap();
+    }
+
+    #[test]
+    fn lint_rejects_an_invalid_target() {
+        let step: RemoveStep = serde_json::from_value(json!({"target": "$.a["})).unwrap();
+        assert!(step.lint().is_err());
     }
 
     #[test]

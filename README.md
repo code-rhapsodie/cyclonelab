@@ -45,6 +45,7 @@ Usage: cyclonelab <COMMAND>
 Commands:
   validate   Checks that a file is valid JSON and conforms to the CycloneDX schema
   transform  Applies a declarative transformation recipe to a CycloneDX SBOM
+  lint       Checks that a transformation YAML file is well-formed, without requiring an SBOM
   suggest    Suggests useful component fields missing from a CycloneDX SBOM
   help       Print this message or the help of the given subcommand(s)
 

@@ -394,6 +394,13 @@ pub fn set(doc: &mut Value, path: &[PathElem], value: Value) -> Result<()> {
     Ok(())
 }
 
+/// Checks only that `path` is syntactically valid (per the grammar
+/// documented at the top of this module), without resolving it against any
+/// document — used by `lint`, which has no SBOM to resolve against.
+pub fn check_syntax(path: &str) -> Result<()> {
+    parse(path).map(|_| ())
+}
+
 /// Parses `path` and requires it to designate a single literal location (no
 /// `*`/`..`) — used by `add`/`merge` targets, which must unambiguously
 /// create missing structure.
@@ -658,6 +665,30 @@ mod tests {
         let mut doc = json!({"a": 1});
         assert_eq!(remove(&mut doc, &[PathElem::Key("missing".into())]), None);
         assert_eq!(doc, json!({"a": 1}));
+    }
+
+    #[test]
+    fn check_syntax_accepts_every_supported_form() {
+        for path in [
+            "$",
+            "$.a.b",
+            "$.[\"$schema\"]",
+            "$.a[*]",
+            "$..a",
+            "$.a[?type==foo]",
+        ] {
+            assert!(check_syntax(path).is_ok(), "expected '{path}' to be valid");
+        }
+    }
+
+    #[test]
+    fn check_syntax_rejects_malformed_paths() {
+        for path in ["a.b", "$.", "$.a[", "$.a[?type=foo]"] {
+            assert!(
+                check_syntax(path).is_err(),
+                "expected '{path}' to be invalid"
+            );
+        }
     }
 
     #[test]

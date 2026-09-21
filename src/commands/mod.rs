@@ -5,6 +5,7 @@
 //! function, then register it in `crate::cli::Commands` and in
 //! `crate::cli::Cli::run`.
 
+pub mod lint;
 pub mod suggest;
 pub mod transform;
 pub mod validate;

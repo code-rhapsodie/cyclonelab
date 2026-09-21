@@ -187,6 +187,43 @@ impl AddStep {
         }
     }
 
+    /// Static checks performable without a document: `target`'s JSONPath
+    /// syntax, and the same option combinations `apply`/`compute_value`
+    /// require at run time (see `doc/transform/action-add.md`) — used by
+    /// `lint`.
+    pub(crate) fn lint(&self) -> Result<()> {
+        match self.target.strip_suffix("[]") {
+            Some(prefix) => {
+                if self.when.is_some() {
+                    bail!("'when' is not supported when 'target' ends with '[]'");
+                }
+                jsonpath::literal(prefix).map(|_| ())
+            }
+            None => jsonpath::check_syntax(&self.target),
+        }
+        .with_context(|| format!("invalid target '{}'", self.target))?;
+
+        match &self.value_from {
+            Some(value_from) => value_from.lint()?,
+            None if self.value.is_none() => {
+                bail!("neither 'value' nor 'valueFrom' is set");
+            }
+            None => {}
+        }
+
+        if self.target.ends_with("[]")
+            && let Some(value) = &self.value
+            && !value.is_array()
+        {
+            bail!(
+                "'value' must be an array because target '{}' ends with '[]'",
+                self.target
+            );
+        }
+
+        Ok(())
+    }
+
     fn compute_value(&self, ctx: &StepContext) -> Result<Value> {
         match &self.value_from {
             None => self.value.clone().with_context(|| {
@@ -224,6 +261,23 @@ impl ValueFrom {
         }
     }
 
+    /// Static checks on the option combination, mirroring [`ValueFrom::resolve`]'s
+    /// run-time checks — used by [`AddStep::lint`].
+    fn lint(&self) -> Result<()> {
+        match (&self.file, &self.generator) {
+            (Some(_), Some(_)) => bail!("'valueFrom' cannot set both 'file' and 'generator'"),
+            (None, None) => bail!("'valueFrom' needs either 'file' or 'generator'"),
+            (Some(_), None) => match self.format.as_deref() {
+                None | Some("json") | Some("text") => Ok(()),
+                Some(other) => bail!(
+                    "unsupported 'valueFrom.format' \"{other}\" for 'valueFrom.file' (expected \
+                     \"text\", or omit it for JSON)"
+                ),
+            },
+            (None, Some(generator)) => generator.lint(self),
+        }
+    }
+
     /// Reads `file` (relative to `ctx.base_dir`) — always a hard step error
     /// if it can't be read, so a recipe never silently ships without the
     /// evidence/content it was meant to embed. `format` then decides how the
@@ -258,6 +312,34 @@ impl ValueFrom {
 }
 
 impl Generator {
+    /// Static checks on `value_from`'s fields for this generator, mirroring
+    /// [`Generator::generate_hash`]'s run-time checks — used by
+    /// [`ValueFrom::lint`].
+    fn lint(self, value_from: &ValueFrom) -> Result<()> {
+        match self {
+            Generator::Uuid | Generator::Timestamp => Ok(()),
+            Generator::Hash => {
+                match value_from.algo.as_deref() {
+                    Some("sha256") => {}
+                    Some(other) => bail!(
+                        "unsupported hash algorithm '{}' (only 'sha256' is supported)",
+                        other
+                    ),
+                    None => bail!("'valueFrom.generator: hash' requires 'algo'"),
+                }
+                match (&value_from.path, &value_from.url) {
+                    (Some(_), None) | (None, Some(_)) => Ok(()),
+                    (Some(_), Some(_)) => {
+                        bail!("'valueFrom' cannot set both 'path' and 'url'")
+                    }
+                    (None, None) => {
+                        bail!("'valueFrom.generator: hash' needs either 'path' or 'url'")
+                    }
+                }
+            }
+        }
+    }
+
     fn generate(self, value_from: &ValueFrom, ctx: &StepContext) -> Result<Value> {
         match self {
             Generator::Uuid => Ok(Value::String(Uuid::new_v4().to_string())),
@@ -792,6 +874,126 @@ mod tests {
         let raw = doc["metadata"]["raw"].as_str().unwrap();
         assert!(raw.starts_with("[{\"a\": \""));
         assert!(raw.ends_with("\"}]"));
+    }
+
+    #[test]
+    fn lint_accepts_a_well_formed_step() {
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.metadata.newField",
+            "value": "hello",
+        }))
+        .unwrap();
+        step.lint().unwrap();
+    }
+
+    #[test]
+    fn lint_rejects_an_invalid_target() {
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.a[",
+            "value": "hello",
+        }))
+        .unwrap();
+        assert!(step.lint().is_err());
+    }
+
+    #[test]
+    fn lint_rejects_neither_value_nor_value_from() {
+        let step: AddStep = serde_json::from_value(json!({"target": "$.a"})).unwrap();
+        let err = step.lint().unwrap_err();
+        assert!(err.to_string().contains("neither 'value' nor 'valueFrom'"));
+    }
+
+    #[test]
+    fn lint_rejects_a_non_array_value_on_an_append_target() {
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.a[]",
+            "value": {"not": "an array"},
+        }))
+        .unwrap();
+        let err = step.lint().unwrap_err();
+        assert!(err.to_string().contains("must be an array"));
+    }
+
+    #[test]
+    fn lint_rejects_when_combined_with_an_append_target() {
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.a[]",
+            "value": [1],
+            "when": "array",
+        }))
+        .unwrap();
+        let err = step.lint().unwrap_err();
+        assert!(err.to_string().contains("'when' is not supported"));
+    }
+
+    #[test]
+    fn lint_rejects_value_from_with_both_file_and_generator() {
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.a",
+            "valueFrom": {"file": "a.json", "generator": "uuid"},
+        }))
+        .unwrap();
+        let err = step.lint().unwrap_err();
+        assert!(err.to_string().contains("both 'file' and 'generator'"));
+    }
+
+    #[test]
+    fn lint_rejects_an_unsupported_value_from_file_format() {
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.a",
+            "valueFrom": {"file": "a.json", "format": "yaml"},
+        }))
+        .unwrap();
+        let err = step.lint().unwrap_err();
+        assert!(err.to_string().contains("yaml"));
+    }
+
+    #[test]
+    fn lint_rejects_an_unsupported_hash_algo() {
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.a",
+            "valueFrom": {"generator": "hash", "algo": "md5", "path": "a.bin"},
+        }))
+        .unwrap();
+        let err = step.lint().unwrap_err();
+        assert!(err.to_string().contains("md5"));
+    }
+
+    #[test]
+    fn lint_rejects_hash_generator_with_both_path_and_url() {
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.a",
+            "valueFrom": {
+                "generator": "hash",
+                "algo": "sha256",
+                "path": "a.bin",
+                "url": "http://example.invalid/a.bin",
+            },
+        }))
+        .unwrap();
+        let err = step.lint().unwrap_err();
+        assert!(err.to_string().contains("path") && err.to_string().contains("url"));
+    }
+
+    #[test]
+    fn lint_rejects_hash_generator_without_path_or_url() {
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.a",
+            "valueFrom": {"generator": "hash", "algo": "sha256"},
+        }))
+        .unwrap();
+        let err = step.lint().unwrap_err();
+        assert!(err.to_string().contains("path") && err.to_string().contains("url"));
+    }
+
+    #[test]
+    fn lint_accepts_a_valid_hash_generator() {
+        let step: AddStep = serde_json::from_value(json!({
+            "target": "$.a",
+            "valueFrom": {"generator": "hash", "algo": "sha256", "path": "a.bin"},
+        }))
+        .unwrap();
+        step.lint().unwrap();
     }
 
     /// Minimal single-shot HTTP/1.1 server returning `body` for one request,

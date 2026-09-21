@@ -2,7 +2,7 @@
 //! automatically. Never touches the document — a plain warning (see
 //! `doc/transform/action-manual.md`).
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -29,6 +29,15 @@ impl ManualStep {
             PathsField::Single { target } => std::slice::from_ref(target),
             PathsField::Many { paths } => paths,
         }
+    }
+
+    /// Static check performable without a document: every path's JSONPath
+    /// syntax — used by `lint`.
+    pub(crate) fn lint(&self) -> Result<()> {
+        for pattern in self.paths() {
+            jsonpath::check_syntax(pattern).with_context(|| format!("invalid path '{pattern}'"))?;
+        }
+        Ok(())
     }
 }
 
@@ -85,6 +94,18 @@ mod tests {
         let before = doc.clone();
         step.apply(&mut doc, &ctx()).unwrap();
         assert_eq!(doc, before);
+    }
+
+    #[test]
+    fn lint_accepts_valid_paths() {
+        let step: ManualStep = serde_json::from_value(json!({"paths": ["$.a", "$..b"]})).unwrap();
+        step.lint().unwrap();
+    }
+
+    #[test]
+    fn lint_rejects_an_invalid_path() {
+        let step: ManualStep = serde_json::from_value(json!({"target": "$.a["})).unwrap();
+        assert!(step.lint().is_err());
     }
 
     #[test]

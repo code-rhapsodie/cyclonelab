@@ -1,7 +1,7 @@
 # cyclonelab
 
 > `cyclonelab` is a CLI for generating and manipulating [CycloneDX](https://cyclonedx.org/) Software Bills of
-> Materials (SBOMs). It ships three subcommands — `validate`, `transform`, `suggest` — and
+> Materials (SBOMs). It ships four subcommands — `validate`, `transform`, `lint`, `suggest` — and
 > supports CycloneDX spec versions **1.5**, **1.6**, and **1.7** (JSON only). This file gives an LLM (ChatGPT, Gemini,
 > Claude, ...) enough detail to write correct `cyclonelab` invocations and valid `transform` YAML recipes.
 
@@ -13,6 +13,7 @@ cyclonelab <COMMAND>
 Commands:
   validate                 Check that a file is valid JSON and conforms to the CycloneDX schema
   transform                Apply a declarative YAML transformation recipe to a CycloneDX SBOM
+  lint                     Check that a transformation YAML file is well-formed, without requiring an SBOM
   suggest                  Suggest useful component/metadata fields missing from a CycloneDX SBOM
   help                     Print this message or the help of the given subcommand(s)
 ```
@@ -361,6 +362,37 @@ current iteration) before each write, e.g.:
 cyclonelab transform template-sbom.cdx.json recipe.yaml "dist/{$artifact_stem}-sbom.cdx.json" \
   --variable repo=code-rhapsodie/cyclonelab --variable version=1.2.0
 ```
+
+## `cyclonelab lint`
+
+```
+cyclonelab lint <TRANSFORM_FILE>
+```
+
+Statically checks a `transform` recipe YAML file for well-formedness — **no `SBOM_FILE` is read or required**, so
+it can run before an SBOM even exists (e.g. as a fast CI check on a recipe change). It performs every check
+`transform` does on the recipe file itself, minus anything that requires resolving a JSONPath against an actual
+document:
+
+- YAML parses and matches the recipe schema (same `file:line:column: message` error as `transform` on failure).
+- No duplicate step `id`s; every `manual` step has a non-empty `description`; every `upgrade` step's
+  `version_target` is reachable by a bundled recipe.
+- Every `target`/`source`/`paths` JSONPath is syntactically valid (a plain syntax check — it cannot know whether the
+  path will match anything in a real document, since none is loaded).
+- Action-specific option combinations are checked exactly as `transform` checks them at run time: `add` has exactly
+  one of `value`/`valueFrom`, and `valueFrom`'s `file`/`generator` fields are consistent (known `format`, a
+  `generator: hash` has `algo: sha256` and exactly one of `path`/`url`); `merge`'s `value` is valid JSON, and a
+  `target[]` value is a JSON array; a `target[]`/`value[]` append form isn't combined with `when`.
+- `foreach`'s reserved iteration variable names (`artifact_name`, `artifact_stem`, `artifact_path`) don't collide
+  with a declared `variables:` entry.
+- Every `{$name}` placeholder used in a step resolves to either a declared `variables:` entry or (when `foreach` is
+  set) a reserved iteration variable name — an unresolvable one is almost always a typo, since `{$var}` templating
+  silently leaves an unknown placeholder untouched instead of failing at `transform` run time, so `lint` turns that
+  silent no-op into a hard error. A declared variable that no step ever references is only a warning (not fatal),
+  printed to stdout.
+
+On success: prints `'<file>' looks valid.` (after any unused-variable warnings) and exits 0. On any of the above
+failing: prints an error and exits non-zero, same as `transform` would once it got that far.
 
 ## CycloneDX specifics
 

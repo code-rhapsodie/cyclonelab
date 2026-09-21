@@ -18,8 +18,10 @@ use crate::util::template::{matches_single_wildcard, render};
 
 /// Names of the ambient variables `foreach` injects for each matched file
 /// (see `doc/transform/foreach.md` §"Variables d'itération"): reserved, so a
-/// declared `variables:` entry cannot reuse one of them.
-const FOREACH_VAR_NAMES: [&str; 3] = ["artifact_name", "artifact_stem", "artifact_path"];
+/// declared `variables:` entry cannot reuse one of them. Also used by `lint`
+/// (see `commands::lint`), which needs the same reserved names to check
+/// variable usage without running `foreach` for real.
+pub(crate) const FOREACH_VAR_NAMES: [&str; 3] = ["artifact_name", "artifact_stem", "artifact_path"];
 
 #[derive(Debug, Args)]
 pub struct TransformArgs {
@@ -37,22 +39,25 @@ pub struct TransformArgs {
     variables: Vec<String>,
 }
 
+/// Also used, read-only, by `lint` (see `commands::lint`), which needs the
+/// same deserialization and static checks `transform` runs before it ever
+/// looks at an SBOM.
 #[derive(Debug, Deserialize)]
-struct TransformFile {
+pub(crate) struct TransformFile {
     #[serde(default)]
     from: Option<String>,
     #[serde(default)]
     #[allow(dead_code)]
     to: Option<String>,
     #[serde(default)]
-    variables: HashMap<String, VariableDecl>,
+    pub(crate) variables: HashMap<String, VariableDecl>,
     #[serde(default)]
-    foreach: Option<ForeachDecl>,
-    steps: Vec<Step>,
+    pub(crate) foreach: Option<ForeachDecl>,
+    pub(crate) steps: Vec<Step>,
 }
 
 #[derive(Debug, Deserialize)]
-struct VariableDecl {
+pub(crate) struct VariableDecl {
     #[serde(default)]
     env: Option<String>,
     #[serde(default)]
@@ -65,7 +70,7 @@ struct VariableDecl {
 /// `steps` pipeline once per file found in `dir` matching `pattern`, instead
 /// of running it once on a fixed `OUTPUT_FILE`.
 #[derive(Debug, Deserialize)]
-struct ForeachDecl {
+pub(crate) struct ForeachDecl {
     dir: PathBuf,
     pattern: String,
 }
@@ -285,7 +290,7 @@ fn run_foreach(
 /// iteration variable names (see `doc/transform/foreach.md` §"Variables
 /// d'itération") — checked once at load time, regardless of how many (if
 /// any) files `foreach` will later match.
-fn check_foreach_variable_conflicts(
+pub(crate) fn check_foreach_variable_conflicts(
     foreach: Option<&ForeachDecl>,
     declared: &HashMap<String, VariableDecl>,
 ) -> Result<()> {
@@ -357,7 +362,7 @@ fn load_and_validate_sbom(sbom_file: &std::path::Path) -> Result<Value> {
     Ok(document)
 }
 
-fn load_transform_file(transform_file: &std::path::Path) -> Result<TransformFile> {
+pub(crate) fn load_transform_file(transform_file: &std::path::Path) -> Result<TransformFile> {
     let content = fs::read_to_string(transform_file)
         .with_context(|| format!("Unable to read '{}'", transform_file.display()))?;
     yaml_serde::from_str(&content).map_err(|err| {

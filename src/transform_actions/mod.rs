@@ -15,7 +15,7 @@ pub mod upgrade;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -143,6 +143,27 @@ pub fn validate_steps(steps: &[Step]) -> Result<()> {
                 known_upgrade_targets.join(", ")
             );
         }
+    }
+    Ok(())
+}
+
+/// Runs every step's own static checks — JSONPath syntax, action-specific
+/// option combinations — without touching any document (see the `lint`
+/// method each action module implements on its step struct). Used by
+/// `commands::lint`, on top of [`validate_steps`], which the `lint` command
+/// also runs first.
+pub fn lint_steps(steps: &[Step]) -> Result<()> {
+    for step in steps {
+        let result = match &step.action {
+            StepAction::Add(s) => s.lint(),
+            StepAction::Remove(s) => s.lint(),
+            StepAction::Move(s) => s.lint(),
+            StepAction::Merge(s) => s.lint(),
+            StepAction::Transform(s) => s.lint(),
+            StepAction::Manual(s) => s.lint(),
+            StepAction::Upgrade(_) => Ok(()),
+        };
+        result.with_context(|| format!("step '{}'", step.id))?;
     }
     Ok(())
 }
