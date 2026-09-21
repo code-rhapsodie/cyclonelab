@@ -15,6 +15,33 @@ pub struct MergeStep {
     pub value: String,
 }
 
+impl MergeStep {
+    /// Static checks performable without a document, mirroring [`Action::apply`]'s
+    /// run-time checks: `value` is valid JSON, `target`'s JSONPath syntax, and
+    /// (when `target` ends with `[]`) that `value` is a JSON array — used by
+    /// `lint`.
+    pub(crate) fn lint(&self) -> Result<()> {
+        let fragment: Value =
+            serde_json::from_str(&self.value).context("'value' is not valid JSON")?;
+
+        let (target, append) = match self.target.strip_suffix("[]") {
+            Some(prefix) => (prefix, true),
+            None => (self.target.as_str(), false),
+        };
+
+        jsonpath::literal(target).with_context(|| format!("invalid target '{}'", self.target))?;
+
+        if append && !fragment.is_array() {
+            bail!(
+                "'value' must be a JSON array because target '{}' ends with '[]'",
+                self.target
+            );
+        }
+
+        Ok(())
+    }
+}
+
 impl Action for MergeStep {
     fn apply(&self, doc: &mut Value, ctx: &StepContext) -> Result<()> {
         let fragment: Value = serde_json::from_str(&self.value)
@@ -155,6 +182,48 @@ mod tests {
         let mut doc = json!({"field": [1, 2, 3]});
         step.apply(&mut doc, &ctx()).unwrap();
         assert_eq!(doc, json!({"field": {"a": 1}}));
+    }
+
+    #[test]
+    fn lint_accepts_a_well_formed_step() {
+        let step: MergeStep = serde_json::from_value(json!({
+            "target": "$.metadata.component",
+            "value": "{\"type\": \"library\"}",
+        }))
+        .unwrap();
+        step.lint().unwrap();
+    }
+
+    #[test]
+    fn lint_rejects_invalid_json_value() {
+        let step: MergeStep = serde_json::from_value(json!({
+            "target": "$.field",
+            "value": "{not json",
+        }))
+        .unwrap();
+        let err = step.lint().unwrap_err();
+        assert!(err.to_string().contains("not valid JSON"));
+    }
+
+    #[test]
+    fn lint_rejects_an_invalid_target() {
+        let step: MergeStep = serde_json::from_value(json!({
+            "target": "$.a[",
+            "value": "{}",
+        }))
+        .unwrap();
+        assert!(step.lint().is_err());
+    }
+
+    #[test]
+    fn lint_rejects_a_non_array_value_on_an_append_target() {
+        let step: MergeStep = serde_json::from_value(json!({
+            "target": "$.field[]",
+            "value": "{\"a\": 1}",
+        }))
+        .unwrap();
+        let err = step.lint().unwrap_err();
+        assert!(err.to_string().contains("must be a JSON array"));
     }
 
     #[test]

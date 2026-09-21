@@ -17,6 +17,14 @@ pub struct MoveStep {
     pub when: Option<JsonType>,
 }
 
+impl MoveStep {
+    /// Static check performable without a document: `source` and `target`'s
+    /// JSONPath syntax and pairing — used by `lint`.
+    pub(crate) fn lint(&self) -> Result<()> {
+        jsonpath::paired_target_key(&self.source, &self.target).map(|_| ())
+    }
+}
+
 impl Action for MoveStep {
     fn apply(&self, doc: &mut Value, ctx: &StepContext) -> Result<()> {
         let target_key = jsonpath::paired_target_key(&self.source, &self.target).with_context(|| {
@@ -80,6 +88,20 @@ mod tests {
         let mut doc = json!({"a": 1});
         step.apply(&mut doc, &ctx()).unwrap();
         assert_eq!(doc, json!({"a": 1}));
+    }
+
+    #[test]
+    fn lint_accepts_a_matching_source_and_target() {
+        let step: MoveStep =
+            serde_json::from_value(json!({"source": "$..old", "target": "$..new"})).unwrap();
+        step.lint().unwrap();
+    }
+
+    #[test]
+    fn lint_rejects_an_invalid_target() {
+        let step: MoveStep =
+            serde_json::from_value(json!({"source": "$.a", "target": "$.["})).unwrap();
+        assert!(step.lint().is_err());
     }
 
     #[test]

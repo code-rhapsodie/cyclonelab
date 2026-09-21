@@ -64,6 +64,16 @@ pub struct MapArrayFields {
     pub item: Map<String, Value>,
 }
 
+impl TransformStep {
+    /// Static check performable without a document: `source` and `target`'s
+    /// JSONPath syntax and pairing — used by `lint`. The per-`Strategy`
+    /// fields are already fully validated by strong typing at deserialize
+    /// time, with no further semantic constraint worth checking statically.
+    pub(crate) fn lint(&self) -> Result<()> {
+        jsonpath::paired_target_key(&self.source, &self.target).map(|_| ())
+    }
+}
+
 impl Action for TransformStep {
     fn apply(&self, doc: &mut Value, ctx: &StepContext) -> Result<()> {
         let target_key = jsonpath::paired_target_key(&self.source, &self.target).with_context(|| {
@@ -224,6 +234,28 @@ mod tests {
             step_id: "test-step".to_string(),
             description: None,
         }
+    }
+
+    #[test]
+    fn lint_accepts_a_matching_source_and_target() {
+        let step: TransformStep = serde_json::from_value(json!({
+            "source": "$..evidence.identity",
+            "target": "$..evidence.identity",
+            "strategy": "wrap-in-array",
+        }))
+        .unwrap();
+        step.lint().unwrap();
+    }
+
+    #[test]
+    fn lint_rejects_an_invalid_target() {
+        let step: TransformStep = serde_json::from_value(json!({
+            "source": "$.a",
+            "target": "$.[",
+            "strategy": "wrap-in-array",
+        }))
+        .unwrap();
+        assert!(step.lint().is_err());
     }
 
     #[test]

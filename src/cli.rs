@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-use crate::commands::{suggest, transform, validate};
+use crate::commands::{lint, suggest, transform, validate};
 use crate::version;
 
 #[derive(Debug, Parser)]
@@ -21,6 +21,8 @@ enum Commands {
     Validate(validate::ValidateArgs),
     /// Applies a declarative transformation recipe to a CycloneDX SBOM.
     Transform(transform::TransformArgs),
+    /// Checks that a transformation YAML file is well-formed, without requiring an SBOM.
+    Lint(lint::LintArgs),
     /// Suggests useful component fields missing from a CycloneDX SBOM.
     Suggest(suggest::SuggestArgs),
 }
@@ -30,6 +32,7 @@ impl Cli {
         match &self.command {
             Commands::Validate(args) => validate::run(args),
             Commands::Transform(args) => transform::run(args),
+            Commands::Lint(args) => lint::run(args),
             Commands::Suggest(args) => suggest::run(args),
         }
     }
