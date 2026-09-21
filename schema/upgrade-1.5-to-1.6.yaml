@@ -69,9 +69,8 @@ steps:
 
   - id: schema-url
     action: add
-    description: Point $schema at the 1.6 schema, when the document sets one.
+    description: Point $schema at the 1.6 schema.
     target: $.["$schema"]
-    when: string
     value: "http://cyclonedx.org/schema/bom-1.6.schema.json"
 
   - id: metadata-manufacturer
