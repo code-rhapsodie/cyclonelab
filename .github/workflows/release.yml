@@ -140,10 +140,10 @@ jobs:
             --variable tag="$GITHUB_REF_NAME"
           rm dist/sbom-template.cdx.json
 
-#      - name: Generate build provenance
-#        uses: actions/attest-build-provenance@v4
-#        with:
-#          subject-path: dist/*
+      - name: Generate build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/*
 
       - name: Create draft release with assets
         id: create_release
