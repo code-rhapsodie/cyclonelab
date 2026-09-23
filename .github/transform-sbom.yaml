@@ -10,7 +10,7 @@ variables:
   author_name:
     value:  "Jean-Baptiste Nahan"
   author_email:
-    value: "jean-baptiste@code-rhapsodie.fr"
+    value: "contact+cyclonelab@code-rhapsodie.fr"
 
 foreach:
   dir: ../dist
@@ -20,6 +20,12 @@ steps:
   - id: upgrade
     action: upgrade
     version_target: "1.7"
+  - id: add lifecycle
+    action: add
+    target: $.metadata.lifecycles[]
+    value:
+      - phase: "build"
+      - phase: "post-build"
   - id: add supplier
     action: add
     target: $.metadata.supplier

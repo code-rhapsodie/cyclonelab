@@ -111,10 +111,16 @@ const FIELD_SUGGESTIONS: &[FieldSuggestion] = &[
     },
 ];
 
-const METADATA_SUGGESTIONS: &[FieldSuggestion] = &[FieldSuggestion {
-    key: "supplier",
-    reason: "identifies the publisher of the described product and its security contact (e.g. a PSIRT): the first thing consumers look for when reporting or tracking a vulnerability",
-}];
+const METADATA_SUGGESTIONS: &[FieldSuggestion] = &[
+    FieldSuggestion {
+        key: "supplier",
+        reason: "identifies the publisher of the described product and its security contact (e.g. a PSIRT): the first thing consumers look for when reporting or tracking a vulnerability",
+    },
+    FieldSuggestion {
+        key: "lifecycles",
+        reason: "tells consumers at which stage (design, pre-build, build, post-build, operations...) this BOM's data was captured, and so how complete it can be: e.g. a pre-build BOM may miss dependencies only resolved at build time",
+    },
+];
 
 /// One reported suggestion: where, and why. `Serialize` only exists behind
 /// `json-output`, so the JSON (de)serialization code is entirely absent
@@ -354,30 +360,51 @@ mod tests {
         );
     }
 
-    #[test]
-    fn flags_a_metadata_without_a_supplier() {
-        let doc = json!({ "metadata": { "timestamp": "2024-01-01T00:00:00Z" } });
+    fn missing_metadata_paths(doc: &Value) -> Vec<String> {
         let metadata = doc.get("metadata").unwrap().as_object().unwrap();
-
-        let found = collect_missing_fields(
+        collect_missing_fields(
             &jsonpath::literal("$.metadata").unwrap(),
             metadata,
             METADATA_SUGGESTIONS,
-        );
-        assert!(!found.is_empty());
+        )
+        .into_iter()
+        .map(|suggestion| suggestion.path)
+        .collect()
+    }
+
+    #[test]
+    fn flags_a_metadata_without_a_supplier() {
+        let doc = json!({ "metadata": { "timestamp": "2024-01-01T00:00:00Z" } });
+        assert!(missing_metadata_paths(&doc).contains(&"$.metadata.supplier".to_string()));
     }
 
     #[test]
     fn does_not_flag_a_metadata_with_a_supplier() {
         let doc = json!({ "metadata": { "supplier": { "name": "Acme" } } });
-        let metadata = doc.get("metadata").unwrap().as_object().unwrap();
+        assert!(!missing_metadata_paths(&doc).contains(&"$.metadata.supplier".to_string()));
+    }
 
-        let found = collect_missing_fields(
-            &jsonpath::literal("$.metadata").unwrap(),
-            metadata,
-            METADATA_SUGGESTIONS,
-        );
-        assert!(found.is_empty());
+    #[test]
+    fn flags_a_metadata_without_lifecycles() {
+        let doc = json!({ "metadata": { "timestamp": "2024-01-01T00:00:00Z" } });
+        assert!(missing_metadata_paths(&doc).contains(&"$.metadata.lifecycles".to_string()));
+    }
+
+    #[test]
+    fn does_not_flag_a_metadata_with_lifecycles() {
+        let doc = json!({ "metadata": { "lifecycles": [{ "phase": "build" }] } });
+        assert!(!missing_metadata_paths(&doc).contains(&"$.metadata.lifecycles".to_string()));
+    }
+
+    #[test]
+    fn does_not_flag_a_complete_metadata() {
+        let doc = json!({
+            "metadata": {
+                "supplier": { "name": "Acme" },
+                "lifecycles": [{ "phase": "build" }]
+            }
+        });
+        assert!(missing_metadata_paths(&doc).is_empty());
     }
 
     fn a_component_path() -> ConcretePath {
