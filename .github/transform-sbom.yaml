@@ -61,6 +61,11 @@ steps:
     target: $.metadata.component.purl
     value: "pkg:generic/code-rhapsodie/cyclonelab@{$version}"
 
+  - id: add version
+    action: add
+    target: $.metadata.component.version
+    value: "{$version}"
+
   - id: add cpe id
     action: add
     target: $.metadata.component.cpe
