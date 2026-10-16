@@ -95,7 +95,7 @@ variables:            # optional
 
 steps:
   - id: <string, unique within the file>
-    action: add | remove | move | merge | transform | manual | upgrade | collect-vcs
+    action: add | remove | move | merge | transform | manual | upgrade | collect-vcs | collect-commits
     description: <free text, optional (required and must be non-empty for 'manual')>
     when: string | object | array   # optional on most actions, see each action below
     # ... action-specific fields, see below
@@ -374,6 +374,45 @@ Example:
   bom_ref: pkg:github/code-rhapsodie/cyclonelab@{$previous_version}
   artifact_cdx: cyclonelab-sbom.json
   license: true
+```
+
+### Action `collect-commits`
+
+Lists, from a **local** Git repository, the commits that touched `path` since a reference commit, and writes them as
+CycloneDX `commit` objects at `target` (typically `pedigree.commits` of a component). Runs the `git` binary found in
+the `PATH`; no forge API is used.
+
+```yaml
+- id: <string>
+  action: collect-commits
+  path: <file or folder of the Git repository>
+  from_commit: <commit id, optional>
+  target: <JSONPath of the commits array>   # required, no trailing '[]'
+  override: true|false                       # optional, default false
+```
+
+- `path`: resolved from the TRANSFORM_FILE's directory (an absolute path is used as-is); the Git repository is the one
+  containing it. Error if it doesn't exist or isn't in a Git repository.
+- `from_commit`: optional, supports `{$var}`. Commits made **after** it (itself excluded) up to `HEAD` are listed;
+  anything `git` resolves is accepted (hash, abbreviated hash, tag). When omitted, the **whole history** of `path` is
+  listed (possibly very long) and a warning is printed. A provided but empty value (e.g. an empty `{$var}`) is an
+  error like an unknown commit, never the full history.
+- `target`: required (a recipe without it is rejected at load time and by `lint`). Missing intermediate objects are
+  created; an existing non-array value is a step error.
+- `override: true` empties the existing array first; `false` appends to it, **without duplicates** on `uid`, so
+  re-running the recipe is idempotent.
+- Each commit (most recent first) becomes `uid` (full hash), `url` (`<origin>/commit/<hash>`, only when the `origin`
+  remote is a GitHub or GitLab HTTPS/SSH URL), `author` and `committer` (`name`, `email`, ISO 8601 `timestamp`) and
+  `message`.
+- No matching commit is a warning, not an error: `target` is still created (an empty array with `override: true`).
+
+```yaml
+- id: collect commits
+  action: collect-commits
+  path: ../src
+  from_commit: "{$last_release_commit}"
+  target: $.metadata.component.pedigree.commits
+  override: true
 ```
 
 ### `foreach` (repeat the whole pipeline per file)
