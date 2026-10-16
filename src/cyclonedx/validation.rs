@@ -3,9 +3,11 @@
 //! matching bundled schema, and validates against it.
 
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use jsonschema::{Retrieve, Uri};
+use packageurl::PackageUrl;
 use serde_json::Value;
 
 /// CycloneDX JSON schemas bundled at compile time (see `schema/`), keyed by
@@ -107,6 +109,7 @@ pub fn validate_bom(instance: &Value) -> Result<ValidationOutcome> {
 
     errors.extend(find_duplicate_bom_refs(instance));
     errors.extend(find_dangling_bom_refs(instance));
+    errors.extend(find_invalid_purls(instance));
 
     Ok(ValidationOutcome {
         spec_version: spec_version.to_string(),
@@ -146,6 +149,43 @@ fn find_duplicate_bom_refs(instance: &Value) -> Vec<SchemaError> {
 
     errors.sort_by(|a, b| a.instance_path.cmp(&b.instance_path));
     errors
+}
+
+/// Every `purl` string in the document must be a valid Package URL (spec:
+/// <https://github.com/package-url/purl-spec>), which the JSON Schema cannot
+/// express since it only checks that the field is a string. Walks the whole
+/// document looking for a `"purl"` string field on any object.
+fn find_invalid_purls(instance: &Value) -> Vec<SchemaError> {
+    let mut errors = Vec::new();
+    collect_invalid_purls(instance, "", &mut errors);
+    errors.sort_by(|a, b| a.instance_path.cmp(&b.instance_path));
+    errors
+}
+
+fn collect_invalid_purls(value: &Value, path: &str, out: &mut Vec<SchemaError>) {
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map {
+                let child_path = format!("{path}/{}", escape_pointer_segment(key));
+                if key == "purl"
+                    && let Some(purl) = child.as_str()
+                    && let Err(error) = PackageUrl::from_str(purl)
+                {
+                    out.push(SchemaError {
+                        instance_path: child_path.clone(),
+                        message: format!("invalid purl '{purl}': {error}"),
+                    });
+                }
+                collect_invalid_purls(child, &child_path, out);
+            }
+        }
+        Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                collect_invalid_purls(item, &format!("{path}/{index}"), out);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Object fields whose value is a single `bom-ref` string that must resolve
@@ -441,5 +481,32 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].instance_path, "/vulnerabilities/0/affects/0/ref");
         assert!(errors[0].message.contains("missing-component"));
+    }
+
+    #[test]
+    fn valid_purls_report_no_errors() {
+        let instance = serde_json::json!({
+            "metadata": {"component": {"purl": "pkg:github/code-rhapsodie/cyclonelab@v1.1.0"}},
+            "components": [{"purl": "pkg:composer/a/b@1.0.0?arch=x86#sub/path"}],
+        });
+
+        assert!(find_invalid_purls(&instance).is_empty());
+    }
+
+    #[test]
+    fn detects_invalid_purls_with_their_path() {
+        let instance = serde_json::json!({
+            "metadata": {"component": {"pedigree": {"ancestors": [{"purl": "not-a-purl"}]}}},
+            "components": [{"purl": "pkg:/"}, {"purl": "pkg:npm/ok@1"}],
+        });
+
+        let errors = find_invalid_purls(&instance);
+        assert_eq!(errors.len(), 2);
+        assert_eq!(errors[0].instance_path, "/components/0/purl");
+        assert_eq!(
+            errors[1].instance_path,
+            "/metadata/component/pedigree/ancestors/0/purl"
+        );
+        assert!(errors[1].message.contains("not-a-purl"));
     }
 }

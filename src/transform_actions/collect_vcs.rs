@@ -3,7 +3,10 @@
 //! `doc/transform/action-collect-vcs.md`). Knows no forge in particular: only
 //! the neutral types of `util::forge`.
 
+use std::str::FromStr;
+
 use anyhow::{Context, Result, bail};
+use packageurl::PackageUrl;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
@@ -54,6 +57,13 @@ impl CollectVcsStep {
                     known.join(", ")
                 );
             }
+        }
+
+        if let Some(purl) = &self.purl
+            && !purl.contains("{$")
+        {
+            PackageUrl::from_str(purl)
+                .map_err(|e| anyhow::anyhow!("invalid purl '{purl}': {e}"))?;
         }
         Ok(())
     }
@@ -418,6 +428,17 @@ mod tests {
         assert!(step(json!({"forge": "gitlab"})).lint().is_err());
         step(json!({"forge": "github"})).lint().unwrap();
         step(json!({"forge": "{$forge}"})).lint().unwrap();
+    }
+
+    #[test]
+    fn lint_rejects_an_invalid_purl_but_accepts_valid_and_templated_ones() {
+        assert!(step(json!({"purl": "not-a-purl"})).lint().is_err());
+        assert!(
+            step(json!({"purl": "pkg:composer/a/b@1.0.0"}))
+                .lint()
+                .is_ok()
+        );
+        assert!(step(json!({"purl": "{$purl}"})).lint().is_ok());
     }
 
     #[test]
