@@ -22,6 +22,8 @@ pub struct CollectVcsStep {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bom_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purl: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact_cdx: Option<String>,
     #[serde(default)]
     pub license: bool,
@@ -69,7 +71,7 @@ impl CollectVcsStep {
         let release = forge.fetch_release(repo, http)?;
 
         let tag = repo.tag.clone().unwrap_or_default();
-        let purl = forge.purl(repo);
+        let purl = self.purl.clone().unwrap_or_else(|| forge.purl(repo));
         let repo_url = forge.repo_url(repo);
 
         let mut references = vec![json!({"type": "vcs", "url": repo_url})];
@@ -133,7 +135,10 @@ impl CollectVcsStep {
         if self.license {
             match forge.fetch_license(repo, http)? {
                 Some(id) => {
-                    component.insert("licenses".into(), json!([{"license": {"id": id}}]));
+                    component.insert(
+                        "licenses".into(),
+                        json!([{"license": {"id": id, "acknowledgement": "declared"}}]),
+                    );
                 }
                 None => eprintln!(
                     "warning: step '{}': no identifiable license declared by the forge for {}/{}; 'licenses' not written",
@@ -250,7 +255,7 @@ mod tests {
                 "group": "code-rhapsodie",
                 "version": "1.1.0",
                 "purl": "pkg:github/code-rhapsodie/cyclonelab@v1.1.0",
-                "licenses": [{"license": {"id": "EUPL-1.2"}}],
+                "licenses": [{"license": {"id": "EUPL-1.2", "acknowledgement": "declared"}}],
                 "externalReferences": [
                     {"type": "vcs", "url": "https://github.com/code-rhapsodie/cyclonelab"},
                     {"type": "distribution", "url": RELEASE_URL},
@@ -262,6 +267,40 @@ mod tests {
                 ]
             })
         );
+    }
+
+    #[test]
+    fn a_forced_purl_replaces_the_forge_one() {
+        let mut doc = json!({});
+        run(
+            &step(json!({"purl": "pkg:composer/code-rhapsodie/cyclonelab@1.1.0"})),
+            &mut doc,
+            &http(Value::Null),
+        )
+        .unwrap();
+        let component = &ancestors(&doc)[0];
+        assert_eq!(
+            component["purl"],
+            "pkg:composer/code-rhapsodie/cyclonelab@1.1.0"
+        );
+        assert_eq!(component["bom-ref"], component["purl"]);
+    }
+
+    #[test]
+    fn a_forced_purl_is_used_to_find_the_existing_component() {
+        let mut doc = json!({"metadata": {"component": {"pedigree": {"ancestors": [
+            {"purl": "pkg:composer/a/b@1", "bom-ref": "keep-me", "name": "old"}
+        ]}}}});
+        run(
+            &step(json!({"purl": "pkg:composer/a/b@1"})),
+            &mut doc,
+            &http(Value::Null),
+        )
+        .unwrap();
+        let items = ancestors(&doc);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["bom-ref"], "keep-me");
+        assert_eq!(items[0]["purl"], "pkg:composer/a/b@1");
     }
 
     #[test]

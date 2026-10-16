@@ -342,6 +342,7 @@ published version the current component derives from. Needs network access.
   target: <JSONPath of a components array>   # required; trailing '[]' appends, otherwise the array is replaced
   forge: github                        # optional: forces the forge, bypassing host detection (self-hosted instances)
   bom_ref: <string>                    # optional
+  purl: <string>                       # optional: forces the component's purl instead of the forge-computed one
   artifact_cdx: <asset name>           # optional: name of a CycloneDX SBOM asset of the release
   license: true|false                  # optional, default false
 ```
@@ -349,13 +350,16 @@ published version the current component derives from. Needs network access.
 - Without `forge`, the forge is chosen from the host of `url`; an unrecognized host is an "unsupported forge" error.
   An unknown `forge` name is rejected by `lint`, listing the accepted values.
 - The component written has `type: library`, `name`/`group` from the repository name/owner, `version` (the tag without
-  its `v` prefix), a `purl` (GitHub: `pkg:github/<owner>/<repo>@<tag>`), and `externalReferences` of type `vcs`
+  its `v` prefix), a `purl` (GitHub: `pkg:github/<owner>/<repo>@<tag>`, unless forced with `purl`), and `externalReferences` of type `vcs`
   (repository) and `distribution` (release page). A `tree/` URL with no release builds the component from the URL alone.
 - `bom-ref`: `bom_ref` if given (always wins); otherwise the `bom-ref` of the `target` element with the same `purl`
   (kept, so existing references stay valid); otherwise the `purl`.
+- `purl`: when given, used as-is (no syntax check) instead of the forge's purl, everywhere the purl matters: the
+  component's `purl`, the default `bom-ref`, and the lookup of the existing component in `target[]`
+  (e.g. `pkg:composer/code-rhapsodie/cyclonelab@1.1.0`). Supports `{$var}`.
 - `artifact_cdx`: adds an `externalReferences` entry of type `bom` pointing to that release asset's download URL (with
   its SHA-256 when the forge provides it). The SBOM is never downloaded or merged. A missing asset is an error.
-- `license: true`: writes the repository's SPDX id as `licenses: [{license: {id: ...}}]`. If the forge declares none
+- `license: true`: writes the repository's SPDX id as `licenses: [{license: {id: ..., acknowledgement: declared}}]`. If the forge declares none
   (or `NOASSERTION`), `licenses` is not written and a warning is printed (not an error). With `false`, no license call
   is made.
 - In append form (`target[]`), a component already there with the same `purl` is replaced instead of duplicated, so
