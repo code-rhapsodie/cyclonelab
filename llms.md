@@ -354,9 +354,10 @@ published version the current component derives from. Needs network access.
   (repository) and `distribution` (release page). A `tree/` URL with no release builds the component from the URL alone.
 - `bom-ref`: `bom_ref` if given (always wins); otherwise the `bom-ref` of the `target` element with the same `purl`
   (kept, so existing references stay valid); otherwise the `purl`.
-- `purl`: when given, used as-is (no syntax check) instead of the forge's purl, everywhere the purl matters: the
+- `purl`: when given, used as-is instead of the forge's purl, everywhere the purl matters: the
   component's `purl`, the default `bom-ref`, and the lookup of the existing component in `target[]`
-  (e.g. `pkg:composer/code-rhapsodie/cyclonelab@1.1.0`). Supports `{$var}`.
+  (e.g. `pkg:composer/code-rhapsodie/cyclonelab@1.1.0`). Supports `{$var}`. An invalid Package URL is rejected by `lint`
+  (unless it contains `{$`) and by the document validation after the step.
 - `artifact_cdx`: adds an `externalReferences` entry of type `bom` pointing to that release asset's download URL (with
   its SHA-256 when the forge provides it). The SBOM is never downloaded or merged. A missing asset is an error.
 - `license: true`: writes the repository's SPDX id as `licenses: [{license: {id: ..., acknowledgement: declared}}]`. If the forge declares none
@@ -366,7 +367,7 @@ published version the current component derives from. Needs network access.
   re-running the recipe is idempotent.
 - The API token is read only from the forge's environment variable (`GITHUB_TOKEN`), never from the YAML file.
 - Errors (step stops, nothing written): malformed URL, unsupported host, release/tag not found, network or rate-limit
-  failure, `artifact_cdx` not among the assets, existing `target[]` value that is not an array.
+  failure, invalid `purl`, `artifact_cdx` not among the assets, existing `target[]` value that is not an array.
 
 Example:
 
