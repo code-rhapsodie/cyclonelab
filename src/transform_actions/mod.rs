@@ -5,6 +5,7 @@
 //! change.
 
 pub mod add;
+pub mod collect_commits;
 pub mod collect_vcs;
 pub mod manual;
 pub mod merge;
@@ -71,6 +72,7 @@ pub enum StepAction {
     Manual(manual::ManualStep),
     Upgrade(upgrade::UpgradeStep),
     CollectVcs(collect_vcs::CollectVcsStep),
+    CollectCommits(collect_commits::CollectCommitsStep),
 }
 
 impl Action for Step {
@@ -84,6 +86,7 @@ impl Action for Step {
             StepAction::Manual(step) => step.apply(doc, ctx),
             StepAction::Upgrade(step) => step.apply(doc, ctx),
             StepAction::CollectVcs(step) => step.apply(doc, ctx),
+            StepAction::CollectCommits(step) => step.apply(doc, ctx),
         }
     }
 }
@@ -166,6 +169,7 @@ pub fn lint_steps(steps: &[Step]) -> Result<()> {
             StepAction::Manual(s) => s.lint(),
             StepAction::Upgrade(_) => Ok(()),
             StepAction::CollectVcs(s) => s.lint(),
+            StepAction::CollectCommits(s) => s.lint(),
         };
         result.with_context(|| format!("step '{}'", step.id))?;
     }
