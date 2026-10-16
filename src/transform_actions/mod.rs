@@ -5,6 +5,7 @@
 //! change.
 
 pub mod add;
+pub mod collect_vcs;
 pub mod manual;
 pub mod merge;
 mod r#move;
@@ -69,6 +70,7 @@ pub enum StepAction {
     Transform(structural::TransformStep),
     Manual(manual::ManualStep),
     Upgrade(upgrade::UpgradeStep),
+    CollectVcs(collect_vcs::CollectVcsStep),
 }
 
 impl Action for Step {
@@ -81,6 +83,7 @@ impl Action for Step {
             StepAction::Transform(step) => step.apply(doc, ctx),
             StepAction::Manual(step) => step.apply(doc, ctx),
             StepAction::Upgrade(step) => step.apply(doc, ctx),
+            StepAction::CollectVcs(step) => step.apply(doc, ctx),
         }
     }
 }
@@ -162,6 +165,7 @@ pub fn lint_steps(steps: &[Step]) -> Result<()> {
             StepAction::Transform(s) => s.lint(),
             StepAction::Manual(s) => s.lint(),
             StepAction::Upgrade(_) => Ok(()),
+            StepAction::CollectVcs(s) => s.lint(),
         };
         result.with_context(|| format!("step '{}'", step.id))?;
     }

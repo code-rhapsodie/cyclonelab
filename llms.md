@@ -95,7 +95,7 @@ variables:            # optional
 
 steps:
   - id: <string, unique within the file>
-    action: add | remove | move | merge | transform | manual | upgrade
+    action: add | remove | move | merge | transform | manual | upgrade | collect-vcs
     description: <free text, optional (required and must be non-empty for 'manual')>
     when: string | object | array   # optional on most actions, see each action below
     # ... action-specific fields, see below
@@ -328,6 +328,53 @@ This action upgrade all necessary properties to obtain a valid SBOM with the new
 currently `"1.6"` or `"1.7"` (never `"1.5"`, since no recipe leads to it, and never an unknown version); rejected at
 load time otherwise, listing the versions actually reachable. If the document is already at or past
 `version_target`, this is a no-op.
+
+### Action `collect-vcs`
+
+Describes the component published at a forge release/tag URL (GitHub today; the forge sits behind an interface, so
+GitLab/Gitea can be added later) and writes it to `target`, typically `pedigree.ancestors`: the ancestor is the
+published version the current component derives from. Needs network access.
+
+```yaml
+- id: <string>
+  action: collect-vcs
+  url: <release or tag URL>            # e.g. https://github.com/<owner>/<repo>/releases/tag/v1.1.0 or .../tree/v1.1.0
+  target: <JSONPath of a components array>   # required; trailing '[]' appends, otherwise the array is replaced
+  forge: github                        # optional: forces the forge, bypassing host detection (self-hosted instances)
+  bom_ref: <string>                    # optional
+  artifact_cdx: <asset name>           # optional: name of a CycloneDX SBOM asset of the release
+  license: true|false                  # optional, default false
+```
+
+- Without `forge`, the forge is chosen from the host of `url`; an unrecognized host is an "unsupported forge" error.
+  An unknown `forge` name is rejected by `lint`, listing the accepted values.
+- The component written has `type: library`, `name`/`group` from the repository name/owner, `version` (the tag without
+  its `v` prefix), a `purl` (GitHub: `pkg:github/<owner>/<repo>@<tag>`), and `externalReferences` of type `vcs`
+  (repository) and `distribution` (release page). A `tree/` URL with no release builds the component from the URL alone.
+- `bom-ref`: `bom_ref` if given (always wins); otherwise the `bom-ref` of the `target` element with the same `purl`
+  (kept, so existing references stay valid); otherwise the `purl`.
+- `artifact_cdx`: adds an `externalReferences` entry of type `bom` pointing to that release asset's download URL (with
+  its SHA-256 when the forge provides it). The SBOM is never downloaded or merged. A missing asset is an error.
+- `license: true`: writes the repository's SPDX id as `licenses: [{license: {id: ...}}]`. If the forge declares none
+  (or `NOASSERTION`), `licenses` is not written and a warning is printed (not an error). With `false`, no license call
+  is made.
+- In append form (`target[]`), a component already there with the same `purl` is replaced instead of duplicated, so
+  re-running the recipe is idempotent.
+- The API token is read only from the forge's environment variable (`GITHUB_TOKEN`), never from the YAML file.
+- Errors (step stops, nothing written): malformed URL, unsupported host, release/tag not found, network or rate-limit
+  failure, `artifact_cdx` not among the assets, existing `target[]` value that is not an array.
+
+Example:
+
+```yaml
+- id: collect ancestor
+  action: collect-vcs
+  url: https://github.com/code-rhapsodie/cyclonelab/releases/tag/v{$previous_version}
+  target: $.metadata.component.pedigree.ancestors[]
+  bom_ref: pkg:github/code-rhapsodie/cyclonelab@{$previous_version}
+  artifact_cdx: cyclonelab-sbom.json
+  license: true
+```
 
 ### `foreach` (repeat the whole pipeline per file)
 
